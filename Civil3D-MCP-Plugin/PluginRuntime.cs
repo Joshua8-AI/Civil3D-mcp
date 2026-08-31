@@ -26,7 +26,7 @@ public sealed class JsonRpcDispatchException : Exception
 
 public static class PluginRuntime
 {
-  public const int Port = 8080;
+  public const int Port = 8757;
 
   private static readonly object Sync = new();
   private static RpcTcpServer? _server;
