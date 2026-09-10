@@ -51,6 +51,15 @@ if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed with exit code $LASTEXIT
   "/p:Civil3DReferencesPath=$ReferencesPath" "/p:TargetFramework=$TargetFramework" -v minimal
 if ($LASTEXITCODE -ne 0) { throw "dotnet build failed with exit code $LASTEXITCODE." }
 
+# The TFM-overridden restore rewrote the shared obj\project.assets.json with
+# net10-only targets, which would break a later default (2026/net8) build run
+# with --no-restore. Restore the default TFM back so the working tree is left
+# exactly as a 2026 build expects. Best-effort: the 2027 output already exists.
+& dotnet restore $project "/p:Civil3DReferencesPath=$ReferencesPath"
+if ($LASTEXITCODE -ne 0) {
+  Write-Warning "Post-build default-TFM restore failed; run 'dotnet restore' before a 2026 build."
+}
+
 $outputDir = Join-Path $repoRoot "Civil3D-MCP-Plugin\bin\$Configuration\$TargetFramework"
 $builtDll  = Join-Path $outputDir "Civil3DMcpPlugin.dll"
 if (-not (Test-Path $builtDll)) {
@@ -65,12 +74,8 @@ if (-not $Install) {
   exit 0
 }
 
-# Civil 3D holds a lock on the bundle DLL while loaded, so the copy would fail
-# partway and leave a mixed-version bundle. Refuse rather than half-deploy.
-$acad = Get-Process -Name acad -ErrorAction SilentlyContinue
-if ($acad) {
-  throw ("Civil 3D is running (pid $($acad.Id -join ', ')). Close it completely, then re-run with -Install.")
-}
-
+# install-bundle.ps1 probes the deployed bundle's file locks itself and refuses
+# to half-deploy over a loaded DLL, so no process check is needed here (matching
+# acad.exe by name would also block on plain AutoCAD, which never loads this bundle).
 & (Join-Path $PSScriptRoot "install-bundle.ps1") -SourceDir $outputDir
 if ($LASTEXITCODE -ne 0) { throw "install-bundle.ps1 failed with exit code $LASTEXITCODE." }

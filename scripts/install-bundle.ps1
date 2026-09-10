@@ -27,6 +27,28 @@ $repoRoot  = Split-Path -Parent $PSScriptRoot
 $bundleDir = Join-Path $BundleRoot $BundleName
 $contents  = Join-Path $bundleDir "Contents"
 
+# A running Civil 3D holds a lock on the loaded bundle DLL; deleting or copying
+# over it fails partway and leaves a partial or mixed-version bundle. Probe the
+# actual file locks rather than matching acad.exe by name: plain AutoCAD uses
+# the same executable, and it does not load this Civil 3D bundle.
+function Get-LockedBundleFile([string] $dir) {
+  if (-not (Test-Path $dir)) { return $null }
+  foreach ($f in Get-ChildItem $dir -Recurse -File -Filter *.dll) {
+    try {
+      $fs = [System.IO.File]::Open($f.FullName, 'Open', 'ReadWrite', 'None')
+      $fs.Close()
+    } catch [System.IO.IOException] {
+      return $f.FullName
+    }
+  }
+  return $null
+}
+
+$locked = Get-LockedBundleFile $bundleDir
+if ($locked) {
+  throw "'$locked' is loaded by a running Civil 3D. Close it completely, then re-run."
+}
+
 if ($Uninstall) {
   if (Test-Path $bundleDir) {
     Remove-Item $bundleDir -Recurse -Force
@@ -44,13 +66,6 @@ if (-not $SourceDir) {
 $dll = Join-Path $SourceDir "Civil3DMcpPlugin.dll"
 if (-not (Test-Path $dll)) {
   throw "Plugin not built at '$dll'. Run scripts\build-2027.ps1 first."
-}
-
-# Civil 3D holds a lock on the bundle DLL while loaded; copying over it would
-# fail partway and leave a mixed-version bundle.
-$acad = Get-Process -Name acad -ErrorAction SilentlyContinue
-if ($acad) {
-  throw ("Civil 3D is running (pid $($acad.Id -join ', ')). Close it completely, then re-run.")
 }
 
 New-Item -ItemType Directory -Path $contents -Force | Out-Null

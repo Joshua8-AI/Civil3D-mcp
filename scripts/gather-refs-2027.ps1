@@ -51,11 +51,6 @@ foreach ($name in $required.Keys) {
   $searchDir = if ($subDir) { Join-Path $AcadRoot $subDir } else { $AcadRoot }
   $target = Join-Path $Destination $name
 
-  if ((Test-Path $target) -and -not $Force) {
-    Write-Host "  skip    $name (already staged; -Force to overwrite)"
-    continue
-  }
-
   # NTFS is case-insensitive, but match defensively so casing drift in the
   # install (acdbmgd.dll vs AcDbMgd.dll) still resolves.
   $source = Get-ChildItem -Path $searchDir -Filter $name -File -ErrorAction SilentlyContinue |
@@ -64,6 +59,18 @@ foreach ($name in $required.Keys) {
     Write-Warning "  MISSING $name (looked in $searchDir)"
     $missing += $name
     continue
+  }
+
+  # Never trust an existing copy blindly: C_References is also the documented
+  # staging folder for 2026 references, so a stale set left there would feed
+  # the 2027 build the wrong assemblies. Skip only a byte-identical copy;
+  # refresh anything else.
+  if ((Test-Path $target) -and -not $Force) {
+    if ((Get-FileHash $target).Hash -eq (Get-FileHash $source.FullName).Hash) {
+      Write-Host "  skip    $name (already staged, matches source)"
+      continue
+    }
+    Write-Host "  refresh $name (staged copy differs from source)"
   }
 
   Copy-Item -Path $source.FullName -Destination $target -Force
