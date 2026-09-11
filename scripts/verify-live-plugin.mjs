@@ -1,5 +1,6 @@
 import { withApplicationConnection } from "../build/utils/ConnectionManager.js";
 import { getProjectContext } from "../build/orchestration/ProjectContextService.js";
+import { createRequestId, runWithRequestId } from "../build/utils/requestContext.js";
 
 const NO_DRAWING_FAIL_FAST_MS = 5000;
 
@@ -12,11 +13,27 @@ async function verifyNoDrawingFailsFast(health) {
   }
 
   const startedAt = Date.now();
-  const timeout = new Promise((_, reject) => setTimeout(
-    () => reject(new Error(`getDrawingInfo did not fail within ${NO_DRAWING_FAIL_FAST_MS}ms with no document open.`)),
-    NO_DRAWING_FAIL_FAST_MS,
-  ).unref());
-  const info = withApplicationConnection(async (client) => client.sendCommand("getDrawingInfo", {}));
+  // The watchdog must abort the request it is racing, not just stop waiting:
+  // otherwise the connection stays open and its 120 s command timer keeps the
+  // request (and this process) alive long after the verdict is known. The
+  // connection manager cancels on the request-context abort signal.
+  const abort = new AbortController();
+  let watchdog;
+  const timeout = new Promise((_, reject) => {
+    watchdog = setTimeout(() => {
+      abort.abort();
+      reject(new Error(`getDrawingInfo did not fail within ${NO_DRAWING_FAIL_FAST_MS}ms with no document open.`));
+    }, NO_DRAWING_FAIL_FAST_MS);
+    watchdog.unref();
+  });
+  const info = runWithRequestId(
+    createRequestId(),
+    () => withApplicationConnection(async (client) => client.sendCommand("getDrawingInfo", {})),
+    abort.signal,
+  );
+  // If the watchdog wins, the aborted request rejects later; keep that from
+  // surfacing as an unhandled rejection.
+  info.catch(() => {});
 
   try {
     await Promise.race([info, timeout]);
@@ -25,6 +42,8 @@ async function verifyNoDrawingFailsFast(health) {
       return { skipped: false, code: error.code, durationMs: Date.now() - startedAt };
     }
     throw error;
+  } finally {
+    clearTimeout(watchdog);
   }
 
   throw new Error("getDrawingInfo succeeded although getCivil3DHealth reported no drawing loaded.");
