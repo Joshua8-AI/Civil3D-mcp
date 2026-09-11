@@ -101,7 +101,7 @@ public static class CivilExecution
       // choosing the hop by MdiActiveDocument was racy: if the last document
       // closed between the check and the hop, the command-context callback
       // would never run and the request would hang holding the gate.
-      var hostTask = ExecuteInApplicationContextAsync(callback);
+      var hostTask = ExecuteInApplicationContextAsync(callback, cancellationToken);
 
       await AwaitHostContextAsync(hostTask, cancellationToken);
 
@@ -140,9 +140,10 @@ public static class CivilExecution
   // that state (the request timed out after 120 s with no document created),
   // whereas Application.Idle keeps firing while only the Start tab is showing.
   // Idle runs on the main thread, which is the context DocumentManager.Add needs.
-  private static Task ExecuteInApplicationContextAsync(Func<object, Task> callback)
+  private static Task ExecuteInApplicationContextAsync(Func<object, Task> callback, CancellationToken cancellationToken)
   {
     var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+    CancellationTokenRegistration cancellation = default;
 
     EventHandler? handler = null;
     handler = async (_, _) =>
@@ -150,6 +151,7 @@ public static class CivilExecution
       // One-shot: detach before running so a slow callback cannot be re-entered
       // by the next idle tick.
       CoreApp.Idle -= handler;
+      cancellation.Dispose();
       try
       {
         await callback(null!);
@@ -161,6 +163,16 @@ public static class CivilExecution
       }
     };
     CoreApp.Idle += handler;
+
+    // A request cancelled before the next idle tick (client disconnect while
+    // Civil 3D is busy) must not leave its handler subscribed; otherwise
+    // abandoned handlers accumulate until Idle next fires. Unsubscribe and
+    // complete as cancelled so the awaiting request observes it promptly.
+    cancellation = cancellationToken.Register(() =>
+    {
+      CoreApp.Idle -= handler;
+      completion.TrySetCanceled(cancellationToken);
+    });
 
     return completion.Task;
   }
