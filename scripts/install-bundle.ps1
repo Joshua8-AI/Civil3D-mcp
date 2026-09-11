@@ -74,15 +74,25 @@ if (-not (Test-Path $dll)) {
   throw "Plugin not built at '$dll'. Run scripts\build-2027.ps1 first."
 }
 
+# The bundle's RuntimeRequirements series must match the Civil 3D release the
+# DLL was compiled against, or AutoCAD silently never loads it. The build's
+# target framework (last path segment of the output dir) tells us which:
+# net8.0-windows is the 2026 build (R25.1), net10.0-windows the 2027 build (R26.0).
+$tfm = Split-Path -Leaf $SourceDir
+$series = switch ($tfm) {
+  "net8.0-windows"  { "R25.1" }
+  "net10.0-windows" { "R26.0" }
+  default { throw "Cannot infer the Civil 3D series from '$tfm'. Pass a build output dir named by target framework (net8.0-windows or net10.0-windows)." }
+}
+
 New-Item -ItemType Directory -Path $contents -Force | Out-Null
 
-# Autodesk reference assemblies are resolved from the Civil 3D process and must
-# not be shipped in the bundle.
-$excluded = Get-ChildItem (Join-Path $repoRoot "C_References") -Filter *.dll -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty Name
+# The six Autodesk references are Private=false in the csproj, so they never
+# land in bin\; deny-list them anyway so a hand-copied set can't be shipped.
+$autodeskRefs = @("accoremgd.dll", "AcDbMgd.dll", "acmgd.dll", "AecBaseMgd.dll", "AeccDbMgd.dll", "AeccPressurePipesMgd.dll")
 $copied = 0
 foreach ($f in Get-ChildItem $SourceDir -File) {
-  if ($excluded -contains $f.Name) { continue }
+  if ($autodeskRefs -contains $f.Name) { continue }
   Copy-Item $f.FullName -Destination (Join-Path $contents $f.Name) -Force
   $copied++
 }
@@ -103,7 +113,7 @@ $xml = @"
   PreferNewestAcross="AppData|ProgramFiles"
   >
   <CompanyDetails Name="Sacred-G" Url="https://github.com/Sacred-G/Civil3D-mcp" Email="" />
-  <RuntimeRequirements Platform="Civil3D" SeriesMin="R26.0" SeriesMax="R26.0" OS="Win64" SupportPath="./Contents" />
+  <RuntimeRequirements Platform="Civil3D" SeriesMin="$series" SeriesMax="$series" OS="Win64" SupportPath="./Contents" />
   <Components>
     <ComponentEntry AppName="Civil3DMcp" ModuleName="./Contents/Civil3DMcpPlugin.dll"
                     LoadOnAutoCADStartup="true" LoadOnRequest="false" AppDescription="Civil 3D MCP JSON-RPC bridge">
