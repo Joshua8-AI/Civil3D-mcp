@@ -66,7 +66,16 @@ foreach ($name in $required.Keys) {
   # the 2027 build the wrong assemblies. Skip only a byte-identical copy;
   # refresh anything else.
   if ((Test-Path $target) -and -not $Force) {
-    if ((Get-FileHash $target).Hash -eq (Get-FileHash $source.FullName).Hash) {
+    # A locked or unreadable file (antivirus scan, concurrent build) must not
+    # abort the run half-staged under ErrorActionPreference=Stop; treat an
+    # unhashable file as different and let the copy below decide.
+    $identical = $false
+    try {
+      $identical = (Get-FileHash $target).Hash -eq (Get-FileHash $source.FullName).Hash
+    } catch {
+      Write-Warning "  could not hash $name ($($_.Exception.Message)); refreshing"
+    }
+    if ($identical) {
       Write-Host "  skip    $name (already staged, matches source)"
       continue
     }

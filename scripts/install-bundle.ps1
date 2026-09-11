@@ -34,11 +34,17 @@ $contents  = Join-Path $bundleDir "Contents"
 function Get-LockedBundleFile([string] $dir) {
   if (-not (Test-Path $dir)) { return $null }
   foreach ($f in Get-ChildItem $dir -Recurse -File -Filter *.dll) {
+    $fs = $null
     try {
       $fs = [System.IO.File]::Open($f.FullName, 'Open', 'ReadWrite', 'None')
-      $fs.Close()
     } catch [System.IO.IOException] {
       return $f.FullName
+    } catch [System.UnauthorizedAccessException] {
+      # Access denied reads the same as locked for our purposes: we cannot
+      # safely replace the file, so refuse with the friendly message.
+      return $f.FullName
+    } finally {
+      if ($fs) { $fs.Dispose() }
     }
   }
   return $null
