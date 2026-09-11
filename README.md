@@ -25,6 +25,13 @@
 
 ---
 
+> [!IMPORTANT]
+> **This is the [Joshua8-AI](https://github.com/Joshua8-AI/Civil3D-mcp) fork with working Civil 3D 2027 support.** Differences from [upstream](https://github.com/Sacred-G/Civil3D-mcp) (all credit for the project itself goes to Sacred-G):
+> - **Civil 3D 2027 (.NET 10) build**: `scripts\gather-refs-2027.ps1` stages the six reference DLLs (spread across three folders in a 2027 install), then `scripts\build-2027.ps1 -Install` builds with a command-line TFM override and deploys. 2026 builds are unaffected.
+> - **Auto-load via ApplicationPlugins bundle** (`scripts\install-bundle.ps1`) instead of NETLOAD/Startup Suite, which AutoCAD's default `SECURELOAD=1` security silently rejects.
+> - **Plugin port is 8757, not 8080** (avoids clashes with other local services). The bundled Claude launcher sets `CIVIL3D_PORT=8757` automatically; register manually with `claude mcp add civil3d --scope user -e CIVIL3D_PORT=8757 -- node <repo>\build\index.js`. Port references below (8080) describe upstream defaults.
+> - The version-independent 2027 fixes are proposed upstream in [Sacred-G/Civil3D-mcp#7](https://github.com/Sacred-G/Civil3D-mcp/pull/7).
+
 ## What Is This?
 
 **Civil3D-MCP** bridges AI assistants (Claude, Cline, Cursor, etc.) to a **live, open Civil 3D drawing** using the [Model Context Protocol](https://modelcontextprotocol.io). Give Claude your design brief — it reads your drawing, runs calculations, and makes changes in real time.

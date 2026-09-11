@@ -28,5 +28,12 @@ if (-not (Test-Path $buildEntryPath)) {
   }
 }
 
+# This fork's plugin listens on 8757 (see PluginRuntime.Port), not the
+# upstream 8080 default the Node side would otherwise assume. Respect an
+# explicit override from the environment.
+if (-not $env:CIVIL3D_PORT) {
+  $env:CIVIL3D_PORT = "8757"
+}
+
 & $nodeCommand $buildEntryPath
 exit $LASTEXITCODE
