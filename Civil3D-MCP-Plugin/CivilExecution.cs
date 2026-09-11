@@ -95,14 +95,13 @@ public static class CivilExecution
         }
       };
 
-      // A command context only exists while a document is active. With zero
-      // documents open, ExecuteInCommandContextAsync would never invoke the
-      // callback, so run in application context instead. This is what lets
-      // newDrawing (DocumentManager.Add is an application-context API) work
-      // as the way out of the zero-document state.
-      var hostTask = App.DocumentManager.MdiActiveDocument == null
-        ? ExecuteInApplicationContextAsync(callback)
-        : RunInCommandContextAsync(callback);
+      // Always run application-context work from the Idle hop, never from a
+      // command context. The only caller is newDrawing, whose DocumentManager
+      // .Add is an application-context API that needs no command context, and
+      // choosing the hop by MdiActiveDocument was racy: if the last document
+      // closed between the check and the hop, the command-context callback
+      // would never run and the request would hang holding the gate.
+      var hostTask = ExecuteInApplicationContextAsync(callback);
 
       await AwaitHostContextAsync(hostTask, cancellationToken);
 
