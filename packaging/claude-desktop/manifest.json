@@ -84,7 +84,7 @@
       "type": "number",
       "title": "Civil 3D plugin port",
       "description": "JSON-RPC/TCP port exposed by Civil3DMcpPlugin.dll.",
-      "default": 8080,
+      "default": 8757,
       "min": 1,
       "max": 65535,
       "required": true

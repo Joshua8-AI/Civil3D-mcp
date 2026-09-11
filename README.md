@@ -39,7 +39,7 @@
 ```text
 MCP client  <-- stdio ----------->  civil3d-mcp (Node.js)
 HTTP client <-- HTTP :3000 ------>  civil3d-mcp (Node.js)
-civil3d-mcp <-- JSON-RPC/TCP :8080 --> Civil3DMcpPlugin.dll --> Civil 3D 2026 API
+civil3d-mcp <-- JSON-RPC/TCP :8757 --> Civil3DMcpPlugin.dll --> Civil 3D 2026 API
 ```
 
 This is the **MCP server** (TypeScript). You also need the **Civil 3D .NET plugin** — see [Installation](#installation).
@@ -114,7 +114,7 @@ If you want the fastest path from clone to a working Claude + Civil 3D setup on 
 For Claude Desktop, a release `.mcpb` is the easiest Node-side installation:
 
 1. Open **Settings > Extensions > Advanced settings > Install Extension**.
-2. Select `civil3d-mcp-<version>.mcpb` and keep ports `8080` and `3000` unless
+2. Select `civil3d-mcp-<version>.mcpb` and keep ports `8757` and `3000` unless
    your local setup uses different ports.
 3. Open Civil 3D and load the native plugin with `NETLOAD` or the `APPLOAD`
    Startup Suite.
@@ -271,7 +271,7 @@ Approval requirements are identical for canonical and alias calls.
 flowchart LR
     Client["MCP Client\n(Claude / Cline / Cursor)"] <-->|"MCP stdio"| Server["civil3d-mcp\nNode.js"]
     HttpClient["Local HTTP Client"] -->|"HTTP :3000"| Server
-    Server <-->|"JSON-RPC/TCP :8080"| Plugin
+    Server <-->|"JSON-RPC/TCP :8757"| Plugin
 
     subgraph Civil3D ["Autodesk Civil 3D"]
         Plugin["Civil3DMcpPlugin.dll\nTCP Listener"]
@@ -911,7 +911,7 @@ The Node MCP server reads the following variables at startup. All are optional; 
 | Variable | Default | Purpose |
 |---|---|---|
 | `CIVIL3D_HOST` | `localhost` | Host the Civil 3D plugin's JSON-RPC TCP server binds to. |
-| `CIVIL3D_PORT` | `8080` | TCP port the plugin listens on (see `PluginRuntime.Port`). |
+| `CIVIL3D_PORT` | `8757` | TCP port the plugin listens on (see `PluginRuntime.Port`). |
 | `CIVIL3D_CONNECT_TIMEOUT` | `5000` | Milliseconds the server waits for a TCP connection to the plugin before giving up. |
 | `CIVIL3D_COMMAND_TIMEOUT` | `120000` | Milliseconds any single JSON-RPC command may run before the Node side rejects the call. Increase for heavy corridor rebuilds. |
 | `CIVIL3D_MAX_RESPONSE_BYTES` | `8388608` | Maximum buffered response size accepted from the Civil 3D plugin. |
@@ -1031,7 +1031,7 @@ Content-Type: application/json
 
 ### Verify the live Civil 3D plugin
 
-With Civil 3D open, a drawing active, and `C3DMCPSTATUS` reporting port 8080,
+With Civil 3D open, a drawing active, and `C3DMCPSTART` echoing port 8757,
 run this read-only P0 smoke check:
 
 ```powershell
@@ -1070,8 +1070,8 @@ use the default loopback endpoint.
 
 **"Cannot connect to Civil 3D plugin"**
 - Civil 3D must be open with a drawing loaded
-- Type `C3DMCPSTATUS` in Civil 3D — confirm the server shows as running on port 8080
-- Check Windows Firewall is not blocking `localhost:8080`
+- Type `C3DMCPSTART` in Civil 3D — it echoes the listening port (8757); `C3DMCPSTATUS` shows running state but not the port
+- Check Windows Firewall is not blocking `localhost:8757`
 - If you moved the plugin to a non-default port, set `CIVIL3D_PORT` on the Node side to match
 
 **"No active document"**

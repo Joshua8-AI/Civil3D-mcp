@@ -12,7 +12,7 @@ be open with `Civil3DMcpPlugin.dll` loaded separately:
 1. Build or download the native plugin.
 2. In Civil 3D, run `NETLOAD` and select `Civil3DMcpPlugin.dll`.
 3. Add the DLL to the `APPLOAD` Startup Suite if it should load automatically.
-4. Keep the default plugin port at `8080`, or enter the configured port while
+4. Keep the default plugin port at `8757`, or enter the configured port while
    installing the extension.
 
 The Node.js server also starts its loopback HTTP bridge on port `3000` by

@@ -66,7 +66,7 @@ npm run package:claude:validate
 1. Open **Settings > Extensions**.
 2. Open **Advanced settings** and select **Install Extension**.
 3. Select `civil3d-mcp-<version>.mcpb`.
-4. For a standard local setup, keep Civil 3D at `localhost:8080` and the HTTP
+4. For a standard local setup, keep Civil 3D at `localhost:8757` and the HTTP
    bridge at `127.0.0.1:3000`.
 5. Open Civil 3D with `Civil3DMcpPlugin.dll` loaded, then ask Claude to run
    `civil3d_health`.
@@ -141,7 +141,7 @@ node build/index.js
 
 The process reads from `stdin` and writes to `stdout` (MCP stdio transport). It
 also starts an HTTP bridge on `127.0.0.1:3000` for local HTTP clients. Node.js
-connects separately to the Civil 3D plugin's JSON-RPC TCP listener on port 8080.
+connects separately to the Civil 3D plugin's JSON-RPC TCP listener on port 8757.
 
 ---
 
@@ -245,7 +245,7 @@ All variables are optional; defaults work for a standard local setup.
 | Variable | Default | Description |
 |---|---|---|
 | `CIVIL3D_HOST` | `localhost` | Host where Civil 3D plugin RPC server is listening |
-| `CIVIL3D_PORT` | `8080` | TCP port for the Civil 3D plugin RPC server |
+| `CIVIL3D_PORT` | `8757` | TCP port for the Civil 3D plugin RPC server |
 | `CIVIL3D_CONNECT_TIMEOUT` | `5000` | Connection timeout in milliseconds |
 | `CIVIL3D_COMMAND_TIMEOUT` | `120000` | Timeout for individual command execution (ms) |
 | `CIVIL3D_MAX_RESPONSE_BYTES` | `8388608` | Maximum plugin response buffered by Node.js |
@@ -284,7 +284,7 @@ connection, MCP, and HTTP variables belong to the Node.js server environment.
       "args": ["C:/path/to/civil3d-mcp/build/index.js"],
       "env": {
         "CIVIL3D_HOST": "localhost",
-        "CIVIL3D_PORT": "8080",
+        "CIVIL3D_PORT": "8757",
         "CIVIL3D_ENABLE_TOOL_ALIASES": "true",
         "CIVIL3D_LOG_LEVEL": "debug"
       }
@@ -299,8 +299,8 @@ connection, MCP, and HTTP variables belong to the Node.js server environment.
 
 End-to-end flow once everything is running:
 
-1. **Civil 3D** opens with the plugin loaded — plugin starts RPC server on port `8080`.
-2. **MCP server** (`node build/index.js`) starts — connects to Civil 3D on `localhost:8080`, starts HTTP bridge on `127.0.0.1:3000`.
+1. **Civil 3D** opens with the plugin loaded — plugin starts RPC server on port `8757`.
+2. **MCP server** (`node build/index.js`) starts — connects to Civil 3D on `localhost:8757`, starts HTTP bridge on `127.0.0.1:3000`.
 3. **Claude Desktop** connects to the MCP server via stdio.
 4. You ask Claude to do something in Civil 3D — Claude calls the MCP tool — MCP server forwards to Civil 3D plugin — result returns to Claude.
 
@@ -323,7 +323,7 @@ See [`Dockerfile`](../Dockerfile) and [`docker-compose.yml`](../docker-compose.y
 docker build -t civil3d-mcp .
 docker run --rm -it \
   -e CIVIL3D_HOST=host.docker.internal \
-  -e CIVIL3D_PORT=8080 \
+  -e CIVIL3D_PORT=8757 \
   civil3d-mcp
 ```
 

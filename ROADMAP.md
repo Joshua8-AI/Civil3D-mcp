@@ -32,7 +32,7 @@ Completed in the first tranche:
 Live validation evidence:
 
 - `npm run test:live-plugin` passed against plugin `1.2.1.0` on
-  `127.0.0.1:8080`, including drawing context and queue/job telemetry.
+  `127.0.0.1:8757`, including drawing context and queue/job telemetry.
 - The opt-in host suite completed a legitimate QC job with a 798-byte response,
   safely below the configured 8 MiB response limit.
 
