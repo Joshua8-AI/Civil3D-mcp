@@ -132,32 +132,36 @@ public static class CivilExecution
     await App.DocumentManager.ExecuteInCommandContextAsync(callback, null);
   }
 
-  // Runs the callback on the host's application context and completes when
-  // the async callback has finished, propagating any exception it throws.
+  // Runs the callback on the host's main thread via a one-shot Application.Idle
+  // handler and completes when the async callback has finished, propagating any
+  // exception it throws.
   //
-  // TODO(live-verification): zero-document execution through
-  // ExecuteInApplicationContext has only been compile-checked against the
-  // reference assemblies. Verify against a running Civil 3D with no documents
-  // open that the callback fires and that DocumentManager.Add succeeds from
-  // it. If it does not fire in that state, fall back to a one-shot
-  // Application.Idle handler (Idle does fire with zero documents) that runs
-  // the callback and completes the TaskCompletionSource.
+  // Verified live on Civil 3D 2027 with zero documents open:
+  // DocumentManager.ExecuteInApplicationContext never invoked its callback in
+  // that state (the request timed out after 120 s with no document created),
+  // whereas Application.Idle keeps firing while only the Start tab is showing.
+  // Idle runs on the main thread, which is the context DocumentManager.Add needs.
   private static Task ExecuteInApplicationContextAsync(Func<object, Task> callback)
   {
     var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    CoreApp.DocumentManager.ExecuteInApplicationContext(async state =>
+    EventHandler? handler = null;
+    handler = async (_, _) =>
     {
+      // One-shot: detach before running so a slow callback cannot be re-entered
+      // by the next idle tick.
+      CoreApp.Idle -= handler;
       try
       {
-        await callback(state);
+        await callback(null!);
         completion.TrySetResult(true);
       }
       catch (Exception ex)
       {
         completion.TrySetException(ex);
       }
-    }, null);
+    };
+    CoreApp.Idle += handler;
 
     return completion.Task;
   }
