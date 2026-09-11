@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- With no document open, drawing-dependent requests hung and wedged the
+  plugin's execution gate; they now fail fast with `CIVIL3D.NO_DRAWING`, and
+  `civil3d_drawing new` works from zero documents.
 - `civil3d_drawing` `settings` failed response validation on every drawing:
   the plugin reports `defaultStyles.corridor` as `null` unconditionally (Civil
   3D exposes no corridor style collection) and the schema rejected `null`. The
