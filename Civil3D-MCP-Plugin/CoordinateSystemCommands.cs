@@ -5,7 +5,7 @@ using Autodesk.Civil.Settings;
 namespace Civil3DMcpPlugin;
 
 /// <summary>
-/// Handlers for civil3d_coordinate_system tool: getCoordinateSystemInfo / transformCoordinates.
+/// Handlers for civil3d_coordinate_system tool: getCoordinateSystemInfo / setCoordinateSystem / transformCoordinates.
 ///
 /// Civil 3D API notes:
 ///   civilDoc.Settings.DrawingSettings.UnitZoneSettings exposes CoordinateSystemCode,
@@ -50,6 +50,85 @@ public static class CoordinateSystemCommands
         ["falseEasting"] = null,
         ["falseNorthing"] = null,
         ["scaleFactor"] = null,
+      };
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // setCoordinateSystem
+  // -------------------------------------------------------------------------
+
+  public static Task<object?> SetCoordinateSystemAsync(JsonObject? parameters)
+  {
+    var code = PluginRuntime.GetRequiredString(parameters, "code").Trim();
+    if (code.Length == 0)
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "Coordinate system code must not be empty.");
+    }
+
+    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      // Validate before assigning so an unknown code fails loudly instead of
+      // leaving the caller believing the drawing was georeferenced.
+      // (SettingsUnitZone.IsValidCoordinateSystemCode exists but is internal.)
+      var knownCode = SettingsUnitZone.GetAllCodes()
+        .FirstOrDefault(candidate => string.Equals(candidate, code, StringComparison.OrdinalIgnoreCase));
+      if (knownCode == null)
+      {
+        throw new JsonRpcDispatchException(
+          "CIVIL3D.INVALID_INPUT",
+          $"'{code}' is not a coordinate system code known to this Civil 3D installation. The drawing coordinate system was not changed.");
+      }
+
+      var unitZone = civilDoc.Settings.DrawingSettings.UnitZoneSettings;
+      var previousCode = unitZone.CoordinateSystemCode;
+      unitZone.CoordinateSystemCode = knownCode;
+
+      var appliedCode = unitZone.CoordinateSystemCode;
+      if (!string.Equals(appliedCode, knownCode, StringComparison.OrdinalIgnoreCase))
+      {
+        throw new JsonRpcDispatchException(
+          "CIVIL3D.API_ERROR",
+          $"Civil 3D did not apply coordinate system '{knownCode}' (the drawing still reports '{appliedCode}').");
+      }
+
+      // The code is applied and confirmed above. The library lookup for its
+      // details can fail or return null on some installations (see
+      // DrawingCommands.ReadCoordinateSystemCode), so it only fills the
+      // descriptive fields and never fails a change that already happened.
+      string? description = null, zone = null, datum = null, projection = null, unit = null;
+      var warnings = new List<string>();
+      try
+      {
+        var coordinateSystem = SettingsUnitZone.GetCoordinateSystemByCode(appliedCode);
+        if (coordinateSystem != null)
+        {
+          description = coordinateSystem.Description;
+          zone = coordinateSystem.Category;
+          datum = coordinateSystem.Datum;
+          projection = coordinateSystem.Projection;
+          unit = coordinateSystem.Unit;
+        }
+        else
+        {
+          warnings.Add($"Coordinate system '{appliedCode}' was applied, but its details could not be read from the coordinate system library.");
+        }
+      }
+      catch (System.Exception ex) when (ex is not JsonRpcDispatchException)
+      {
+        warnings.Add($"Coordinate system '{appliedCode}' was applied, but its details could not be read from the coordinate system library: {ex.Message}");
+      }
+
+      return new Dictionary<string, object?>
+      {
+        ["code"] = appliedCode,
+        ["previousCode"] = string.IsNullOrWhiteSpace(previousCode) ? null : previousCode,
+        ["description"] = description,
+        ["zone"] = zone,
+        ["datum"] = datum,
+        ["projection"] = projection,
+        ["unit"] = unit,
+        ["warnings"] = warnings,
       };
     });
   }

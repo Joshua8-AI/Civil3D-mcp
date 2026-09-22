@@ -14,6 +14,7 @@ public static class CommandDispatcher
       "getDrawingSettings" => DrawingCommands.GetDrawingSettingsAsync(),
       "getDrawingUnits" => DrawingCommands.GetDrawingUnitsAsync(),
       "getCoordinateSystemInfo" => CoordinateSystemCommands.GetCoordinateSystemInfoAsync(),
+      "setCoordinateSystem" => CoordinateSystemCommands.SetCoordinateSystemAsync(parameters),
       "transformCoordinates" => CoordinateSystemCommands.TransformCoordinatesAsync(parameters),
       "corridorQcReportWorkflow" => WorkflowCommands.CorridorQcReportWorkflowAsync(parameters),
       "surfaceComparisonReportWorkflow" => WorkflowCommands.SurfaceComparisonReportWorkflowAsync(parameters),
