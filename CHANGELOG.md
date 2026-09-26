@@ -30,6 +30,44 @@
 - `CivilExecution.ExecuteCommandSequenceAsync` for host work that issues
   AutoCAD commands; it keeps the zero-document `CIVIL3D.NO_DRAWING` fast fail
   and the drawing-identity check but opens no transaction around the command.
+- `civil3d_xref` domain: `list` reports each xref's saved and found paths,
+  status (`loaded`, `unloaded`, `unreferenced`, `not_found`, `unresolved`,
+  `orphaned`), attach or overlay, nesting and parents, and instance count.
+  `attach`, `overlay`, `detach`, `reload`, `unload`, `bind` (`bind`/`insert`)
+  and `repath` (`absolute`/`relative`) change xrefs and need approval. Every
+  caller path goes through `FileBoundary` (import roots, `.dwg` only, must
+  exist). Reload, unload, bind, and detach run under the document lock with no
+  enclosing transaction, through the new
+  `CivilExecution.ExecuteLockedWithoutTransactionAsync`.
+- `civil3d_project data_shortcut_references` (read-only) lists the
+  data-shortcut references in the current drawing with source drawing, source
+  object name/type/handle, where the source is relative to the working folder
+  and current project, and `current`/`out_of_date`/`broken`/`source_missing`
+  status, all from `Entity.GetReferenceInfo()` and the `IsReference*` flags.
+  `data_shortcut_repair` (needs approval) repoints a reference to a new source
+  drawing through `DataShortcuts.RepairBrokenDRef`, resolved at runtime from
+  `AeccDataShortcutMgd.dll` through `Civil3DCompatibility`, so the build needs
+  no seventh reference.
+- `civil3d_compare` domain, which never modifies a drawing. `drawing` compares
+  the active drawing with another DWG that it reads as a side database with
+  `ReadDwgFile`, never opening it as a document. `snapshot` writes a JSON
+  fingerprint to the export roots; it is gated as an export and does not
+  overwrite by default. `compare_snapshot` diffs against a snapshot. Results
+  group added/removed/modified entities by type and layer and add Civil 3D
+  object diffs: alignment length and geometry hash, profile PVIs, surface
+  statistics, pipe counts and inverts. The host-independent diff
+  (`DrawingFingerprint.cs`) has an offline harness,
+  `npm run test:compare-diff`.
+
+### Changed
+
+- `data_shortcut_sync` sends `_AeccSynchronizeReferences`, the command name
+  found in the Civil 3D 2027 CUIx and `AeccUiBase.arx`, where it used to send
+  `SynchronizeReferences`. `data_shortcut_list` fills `sourceFilePath` from
+  `GetReferenceInfo()`.
+- `data_shortcut_promote` now finds the reference, preselects it, and queues
+  `_AeccPromoteReference`, where it used to only return manual steps.
+
 - Civil 3D 2027 build path: `scripts/gather-refs-2027.ps1` stages the six
   managed references (spread across three folders in a 2027 install) and
   `scripts/build-2027.ps1` builds with a `net10.0-windows` override — Civil 3D

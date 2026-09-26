@@ -75,6 +75,62 @@ public static class CivilExecution
     });
   }
 
+  // Same host gate, command context, drawing-identity check, and document
+  // lock as ExecuteAsync, but WITHOUT an enclosing transaction. Some database
+  // operations (xref reload/unload/bind/detach) manage their own internal
+  // transactions and must not run nested inside an open top transaction; the
+  // callback opens short transactions of its own where it needs to read.
+  public static async Task<T> ExecuteLockedWithoutTransactionAsync<T>(Func<Document, CivilDocument, Database, T> action)
+  {
+    return await ExecuteSerializedAsync(async cancellationToken =>
+    {
+      if (App.DocumentManager.MdiActiveDocument == null)
+      {
+        throw new JsonRpcDispatchException("CIVIL3D.NO_DRAWING", "No active drawing is open in Civil 3D.");
+      }
+
+      T? result = default;
+      Exception? capturedException = null;
+
+      var hostTask = RunInCommandContextAsync(async _ =>
+      {
+        try
+        {
+          cancellationToken.ThrowIfCancellationRequested();
+          var doc = App.DocumentManager.MdiActiveDocument ?? throw new JsonRpcDispatchException("CIVIL3D.NO_DRAWING", "No active drawing is open in Civil 3D.");
+          var expectedDrawingIdentity = PluginRuntime.GetExpectedDrawingIdentity();
+          var activeDrawingIdentity = PluginRuntime.GetDrawingIdentity(doc);
+          if (!string.IsNullOrWhiteSpace(expectedDrawingIdentity) &&
+              !string.Equals(expectedDrawingIdentity, activeDrawingIdentity, StringComparison.OrdinalIgnoreCase))
+          {
+            throw new JsonRpcDispatchException(
+              "CIVIL3D.CONFLICT",
+              $"The active drawing changed from '{expectedDrawingIdentity}' to '{activeDrawingIdentity}' while the operation was queued. No drawing changes were made.");
+          }
+          var civilDoc = CivilApplication.ActiveDocument ?? throw new JsonRpcDispatchException("CIVIL3D.NO_DRAWING", "No active Civil 3D document is available.");
+
+          using var documentLock = doc.LockDocument();
+          result = action(doc, civilDoc, doc.Database);
+        }
+        catch (Exception ex)
+        {
+          capturedException = ex;
+        }
+
+        await Task.CompletedTask;
+      });
+
+      await AwaitHostContextAsync(hostTask, cancellationToken);
+
+      if (capturedException != null)
+      {
+        throw capturedException;
+      }
+
+      return result!;
+    });
+  }
+
   public static async Task<T> ExecuteInCommandContextAsync<T>(Func<Task<T>> action)
   {
     return await ExecuteSerializedAsync(async cancellationToken =>
