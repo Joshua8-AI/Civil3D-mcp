@@ -16,6 +16,20 @@
 
 ### Added
 
+- `civil3d_plot` domain tool (plugin `PlotCommands.cs`): `list_layouts`,
+  `list_page_setups`, `list_plotters` (read-only, never approval-gated) and
+  `plot_layouts_to_pdf` / `publish_sheet_set` (approval-gated `export`). Plots
+  drive `-PLOT` / `-PUBLISH` with `BACKGROUNDPLOT=0` instead of the PlotEngine,
+  which live testing found crash-prone from a command context; every answer is
+  validated up front, output goes through `FileBoundary` (export roots, `.pdf`,
+  directory chain locked while the plotter writes, `overwrite` defaults to
+  false), and success is only reported for a non-empty PDF written by the run.
+  Both output actions can run as `civil3d_job` operations
+  (`plot_layouts_to_pdf`, `publish_sheet_set`) via `asJob: true`. Live
+  verification against Civil 3D 2027 is pending (see TESTING.md).
+- `CivilExecution.ExecuteCommandSequenceAsync` for host work that issues
+  AutoCAD commands; it keeps the zero-document `CIVIL3D.NO_DRAWING` fast fail
+  and the drawing-identity check but opens no transaction around the command.
 - Civil 3D 2027 build path: `scripts/gather-refs-2027.ps1` stages the six
   managed references (spread across three folders in a 2027 install) and
   `scripts/build-2027.ps1` builds with a `net10.0-windows` override — Civil 3D

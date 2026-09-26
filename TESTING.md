@@ -34,6 +34,29 @@ wedged the plugin until Civil 3D restarted (`docs/FINDINGS.md` in
 `Joshua8-AI/civil3d-automation` has the original field report). The fix is
 `fix-no-document-deadlock` / upstream PR #8.
 
+### Pending live verification: `civil3d_plot` (feature/plot-publish)
+
+Offline only so far: plugin compiles against 2027 refs, vitest covers schemas,
+approval classification, routing and job registration, and the FileBoundary
+harness covers the directory lock used while the plotter writes (2026-09-26 on
+the branch: `npm test` 437 passed / 34 files, `docs:check` current at 207
+entries, `build-2027.ps1` 0 warnings / 0 errors). None of the
+following has been run against a live Civil 3D 2027 yet:
+
+| scenario | how | last result |
+|---|---|---|
+| Discovery | `civil3d_plot` `list_layouts`, `list_page_setups`, `list_plotters` (with and without `device: "DWG To PDF.pc3"`) | pending |
+| Zero documents | close all drawings, call `list_layouts` and `plot_layouts_to_pdf` | pending (expect `CIVIL3D.NO_DRAWING` fast) |
+| Plot one layout | approval, then `plot_layouts_to_pdf` with `layoutNames: [..]`, `outputPath` under Documents | pending |
+| Plot all layouts | `allLayouts: true`, `outputDirectory`; check per-layout bytes/pageCount, CTAB and BACKGROUNDPLOT restored | pending |
+| Page setup / paper override | `pageSetup`, then `paperSize` + `plotStyleTable: "monochrome.ctb"` | pending |
+| Overwrite guard | repeat without `overwrite` (expect `CIVIL3D.CONFLICT`), then with `overwrite: true` | pending |
+| Path boundary | `outputDirectory` outside export roots (expect `CIVIL3D.PATH_NOT_ALLOWED`, nothing plotted) | pending |
+| Prompt-chain drift | a layout whose paper is not on DWG To PDF.pc3 (expect up-front `INVALID_INPUT`, no stuck `-PLOT`) | pending |
+| Publish multi-sheet | save drawing, `publish_sheet_set` with 2+ layouts; confirm page count and order; `keepDsd: true` to inspect the DSD | pending (DSD `Type=6` and the `-PUBLISH` prompt chain are unverified on 2027) |
+| Publish unsaved guard | modify drawing, `publish_sheet_set` (expect `CIVIL3D.CONFLICT`) | pending |
+| As job | `asJob: true`, poll `civil3d_job status`, cancel mid-batch | pending |
+
 ## Deploy-script regression checks
 
 - `install-bundle.ps1` derives `SeriesMin/Max` from the build's target framework
