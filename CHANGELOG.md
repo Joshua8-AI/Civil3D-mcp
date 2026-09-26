@@ -16,6 +16,34 @@
 
 ### Added
 
+- Read-only geometry for the Civil 3D-Revit bridge. None of these is
+  approval-gated (`query`/`inspect`, `safeForRetry`):
+  - `getSurfaceTinVertices` (`civil3d_surface get_tin_vertices`): the vertices
+    of a TIN surface's visible triangles (or a grid surface's visible points),
+    optionally clipped to a plan polygon. Over `maxPoints` (default 50,000,
+    hard cap 100,000) they are decimated deterministically: sorted by X then Y,
+    with an even stride. Coordinates are rounded to 6 decimals to keep the
+    largest response near 6 MB. TIN volume surfaces are rejected clearly.
+  - `getParcelGeometry` (`civil3d_parcel get_geometry`): real parcel boundary
+    from the typed curve API (base curve, then `GetGeCurve`, then `Explode`)
+    with line/arc segments, bulges, a densified polygon, perimeter and area
+    computed including arcs. `reportParcels` still uses its reflection path.
+  - `getDrawingUnits` (`civil3d_drawing units`): raw INSUNITS and its name, a
+    `lengthUnit` that keeps `USSurveyFeet` distinct from `Feet`, metres per
+    unit, the Civil 3D drawing unit settings (Feet/Meters and the
+    imperial-to-metric foot), angular units, and a consistency warning when
+    INSUNITS and Civil 3D disagree.
+  - `getPipeNetwork`/`getPipe` pipes gain `startPoint`, `endPoint`,
+    `startInvert`, `endInvert`, `startCrown`, `endCrown`, `innerDiameter`,
+    `outerDiameter`, `innerHeight`, `outerHeight`, `wallThickness`,
+    `crossSectionalShape` and `length2d` (additive; inverts are centreline
+    minus inner height / 2, as in `civil3d_compare`).
+  - `getDrawingInfo` and `getCoordinateSystemInfo` gain an additive
+    `lengthUnit`; `linearUnits` keeps its old values.
+  - Host-independent `BridgeMath.cs` (arcs, bulge areas, chaining,
+    point-in-polygon, stride decimation, unit resolution) with an offline
+    harness, `npm run test:bridge-math`. Live verification is pending (see
+    TESTING.md).
 - `civil3d_plot` domain tool (plugin `PlotCommands.cs`): `list_layouts`,
   `list_page_setups`, `list_plotters` (read-only, never approval-gated) and
   `plot_layouts_to_pdf` / `publish_sheet_set` (approval-gated `export`). Plots

@@ -101,6 +101,55 @@ was deployed. Run these with the plugin loaded and `CIVIL3D_IMPORT_ROOTS` /
   large drawing, because the whole comparison runs on the host thread under
   the gate.
 
+## Bridge-support reads (2026-09-26, `feature/bridge-support-commands`)
+
+`getSurfaceTinVertices`, `getParcelGeometry`, `getDrawingUnits`, and the new
+pipe fields on `getPipeNetwork`. Offline, on the branch:
+
+| check | command | result |
+|---|---|---|
+| Node unit tests (adds `bridge_support_commands`) | `npm test` | 467 passed / 38 files |
+| Generated tool reference current | `npm run docs:check` | current (209 entries) |
+| Version files in sync | `npm run version:check` | agree on 1.2.1 |
+| Plugin compiles (2027 refs) | `.\scripts\build-2027.ps1` (no `-Install`) | 0 warnings, 0 errors |
+| Arc, area, chaining, decimation and unit math | `npm run test:bridge-math` | passed |
+| Other harnesses still green | `npm run test:compare-diff`, `npm run test:p2-boundaries` | passed |
+| Startup smoke | `npm run test:startup` | 211 registered tools |
+
+The Civil 3D API members used were checked against the 2027 reference
+assemblies (metadata only): `TinSurface.GetTriangles(bool)`,
+`TinSurfaceTriangle.Vertex1..3.Location`, `GridSurface.GetVertices(bool)`,
+`Parcel.BaseCurve`/`GetGeCurve`/`Explode`, `Pipe.InnerHeight`/`OuterDiameterOrWidth`,
+`SettingsUnitZone.DrawingUnits`/`ImperialToMetricConversion`.
+
+**Live verification is still pending.** Civil 3D was not running and nothing
+was deployed. With the plugin loaded:
+
+- `getSurfaceTinVertices` on a TIN surface with an outer boundary: check that
+  `totalVertexCount` excludes points outside the boundary, that a `boundary`
+  polygon clips, and that `maxPoints: 100000` on a surface with more vertices
+  returns `truncated: true`, the same subset on a second call, and a response
+  under 8 MiB. Time it on a surface with over 1 million vertices (it walks
+  every visible triangle on the host thread). Try a grid surface (DEM) and a
+  TIN volume surface (expect `CIVIL3D.INVALID_INPUT`).
+- `getParcelGeometry` on a rectangular lot, a lot with a curved frontage, and
+  a parcel with a curve on its back line. Record `geometrySource`: whether
+  `Parcel.BaseCurve` works or the `GetGeCurve`/`Explode` fallbacks are needed.
+  `computedArea` should match `area` (a note appears when they differ by more
+  than 0.1%). Check the sign of the bulges against the drawing, and check a
+  parcel with an interior hole: only the outer loop is expected.
+- `getDrawingUnits` on drawings with INSUNITS = Feet (2), USSurveyFeet (21),
+  Meters (6) and Undefined (0), and on a Feet drawing whose Civil 3D
+  Drawing Settings use the US survey foot (expect `unitsConsistent: false`
+  and a warning).
+- `getPipeNetwork`: compare `startPoint`/`endPoint` with the pipe's grips and
+  `startInvert`/`endInvert` with the inverts shown in Pipe Properties,
+  including an elliptical or box pipe (`innerHeight` differs from
+  `innerDiameter`).
+- Bridge end to end: `bridge_status` should report the three commands as
+  `available`; `bridge_create_toposolid sampling: "tin"` and the pipe and
+  parcel tools should use the new data.
+
 ## Deploy-script regression checks
 
 - `install-bundle.ps1` derives `SeriesMin/Max` from the build's target framework
