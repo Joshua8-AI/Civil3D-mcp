@@ -228,8 +228,7 @@ public static class PlotCommands
           var watch = Stopwatch.StartNew();
           try
           {
-            await PlotOneAsync(doc, job);
-            var file = VerifyOutput(job.OutputPath!, job.StartedUtc);
+            var file = await PlotOneAsync(doc, job, overwrite);
             results.Add(LayoutResult(job, "plotted", file, null, watch.ElapsedMilliseconds));
           }
           catch (Exception ex)
@@ -324,10 +323,20 @@ public static class PlotCommands
       var sheets = new List<PublishSheet>();
       if (requestedSheets.Count == 0)
       {
-        sheets.AddRange(currentLayouts.OrderBy(layout => layout.TabOrder).Select(layout => new PublishSheet(layout.Name, null)));
+        // PUBLISH refuses layouts that were never initialized (never opened,
+        // so no paper-space viewport or page size yet); skip and report them
+        // instead of failing the whole set.
+        sheets.AddRange(currentLayouts.Where(layout => layout.Initialized).OrderBy(layout => layout.TabOrder).Select(layout => new PublishSheet(layout.Name, null)));
+        var uninitialized = currentLayouts.Where(layout => !layout.Initialized).OrderBy(layout => layout.TabOrder).Select(layout => layout.Name).ToList();
+        if (uninitialized.Count > 0)
+        {
+          warnings.Add($"Skipped {uninitialized.Count} layout(s) that were never initialized: {Preview(uninitialized)}. Open each layout tab once and save the drawing to include it.");
+        }
         if (sheets.Count == 0)
         {
-          throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", "The active drawing has no paper-space layouts to publish.");
+          throw uninitialized.Count > 0
+            ? new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"None of the drawing's paper-space layouts have been initialized ({Preview(uninitialized)}). Open each layout tab once and save the drawing before publishing.")
+            : new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", "The active drawing has no paper-space layouts to publish.");
         }
       }
       else
@@ -338,6 +347,7 @@ public static class PlotCommands
           {
             var match = currentLayouts.FirstOrDefault(item => string.Equals(item.Name, layout, StringComparison.OrdinalIgnoreCase))
               ?? throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", LayoutNotFoundMessage(layout, currentLayouts));
+            RequireInitialized(match);
             sheets.Add(new PublishSheet(match.Name, null));
           }
           else
@@ -347,6 +357,7 @@ public static class PlotCommands
             {
               var match = currentLayouts.FirstOrDefault(item => string.Equals(item.Name, layout, StringComparison.OrdinalIgnoreCase))
                 ?? throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", LayoutNotFoundMessage(layout, currentLayouts));
+              RequireInitialized(match);
               sheets.Add(new PublishSheet(match.Name, null));
             }
             else
@@ -378,34 +389,41 @@ public static class PlotCommands
 
       var outputPath = FileBoundary.ResolveExportPath(outputPathRaw, overwrite, ".pdf");
       var dsdPath = FileBoundary.ResolveExportPath(Path.ChangeExtension(outputPath, ".mcp-publish.dsd"), true, ".dsd");
-      FileBoundary.WriteAllTextAtomic(dsdPath, BuildDsd(sheets, currentPath, outputPath), new UTF8Encoding(false), true, ".dsd");
 
       var watch = Stopwatch.StartNew();
       var startedUtc = DateTime.UtcNow;
-      try
+      OutputFile file;
+      // PUBLISH writes to a hidden, unpredictable name in the locked output
+      // directory (the DSD's DWF= target); the finished PDF is then renamed
+      // over the final name, and a failed publish never deletes an existing PDF.
+      using (var output = FileBoundary.BeginExternalWrite(outputPath, overwrite))
       {
-        using var directoryLock = FileBoundary.LockExportDirectoryForExternalWriter(outputPath);
-        DeleteExisting(outputPath);
-
-        using var sysvars = new SystemVariableScope();
-        sysvars.Set("FILEDIA", 0);
-        sysvars.Set("CMDECHO", 0);
-        sysvars.Set("BACKGROUNDPLOT", 0);
-        sysvars.Set("PUBLISHCOLLATE", 1);
-
-        cancellationToken.ThrowIfCancellationRequested();
-        await RunCommandAsync(doc, "PUBLISH", "_.-PUBLISH", dsdPath);
-        warnings.AddRange(sysvars.RestoreWarnings());
-      }
-      finally
-      {
-        if (!keepDsd)
+        try
         {
-          TryDelete(dsdPath);
-        }
-      }
+          FileBoundary.WriteAllTextAtomic(dsdPath, BuildDsd(sheets, currentPath, output.TempPath), new UTF8Encoding(false), true, ".dsd");
 
-      var file = VerifyOutput(outputPath, startedUtc);
+          using var sysvars = new SystemVariableScope();
+          sysvars.Set("FILEDIA", 0);
+          sysvars.Set("CMDECHO", 0);
+          sysvars.Set("BACKGROUNDPLOT", 0);
+          sysvars.Set("PUBLISHCOLLATE", 1);
+
+          cancellationToken.ThrowIfCancellationRequested();
+          await RunCommandAsync(doc, "PUBLISH", "_.-PUBLISH", dsdPath);
+          warnings.AddRange(sysvars.RestoreWarnings());
+        }
+        finally
+        {
+          if (!keepDsd)
+          {
+            TryDelete(dsdPath);
+          }
+        }
+
+        file = VerifyOutput(output.TempPath, startedUtc);
+        output.Commit();
+        file = file with { Path = output.FinalPath };
+      }
       if (file.PageCount is int pages && pages != sheets.Count)
       {
         warnings.Add($"Expected {sheets.Count} pages but the PDF appears to contain {pages}; check the sheet list.");
@@ -451,7 +469,37 @@ public static class PlotCommands
 
   private sealed record PublishSheet(string LayoutName, string? DrawingPath);
 
-  private sealed record LayoutSnapshot(string Name, int TabOrder, bool ModelType);
+  private sealed record LayoutSnapshot(string Name, int TabOrder, bool ModelType, bool Initialized = true);
+
+  private static void RequireInitialized(LayoutSnapshot layout)
+  {
+    if (!layout.Initialized)
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.INVALID_INPUT",
+        $"Layout '{layout.Name}' has never been initialized, and PUBLISH refuses uninitialized layouts. Open the layout tab once and save the drawing, then publish again.");
+    }
+  }
+
+  // A paper-space layout gets its overall paper-space viewport (and a page
+  // size) when it is first opened; until then it has no viewports.
+  private static bool IsInitialized(Layout layout)
+  {
+    if (layout.ModelType)
+    {
+      return true;
+    }
+
+    try
+    {
+      return layout.GetViewports().Count > 0;
+    }
+    catch
+    {
+      // Unknown: let PUBLISH report it rather than block a valid sheet.
+      return true;
+    }
+  }
 
   private sealed record MediaName(string Canonical, string Locale);
 
@@ -585,10 +633,12 @@ public static class PlotCommands
   // stops instead of feeding the next layout's answers into a stale prompt.
   private const string CommandIncompleteCode = "CIVIL3D.COMMAND_FAILED";
 
-  private static async Task PlotOneAsync(Document doc, PlotJob job)
+  private static async Task<OutputFile> PlotOneAsync(Document doc, PlotJob job, bool overwrite)
   {
-    using var directoryLock = FileBoundary.LockExportDirectoryForExternalWriter(job.OutputPath!);
-    DeleteExisting(job.OutputPath!);
+    // The plotter writes to a hidden, unpredictable name in the locked output
+    // directory; the finished file is then renamed over the final name. This
+    // also means a failed plot never deletes an existing PDF.
+    using var output = FileBoundary.BeginExternalWrite(job.OutputPath!, overwrite);
 
     // Matches lisp/plot.lsp: make the layout current first so the layout-name
     // prompt default is the target, then answer the verified chain.
@@ -615,34 +665,86 @@ public static class PlotCommands
       "_N",                         // Scale lineweights with plot scale?
       "_N",                         // Plot paper space first?
       "_N",                         // Hide paperspace objects?
-      job.OutputPath!,              // File name (PDF devices ask directly)
+      output.TempPath,              // File name (PDF devices ask directly)
       "_N",                         // Save changes to page setup?
       "_Y");                        // Proceed with plot?
+
+    var file = VerifyOutput(output.TempPath, job.StartedUtc);
+    output.Commit();
+    return file with { Path = output.FinalPath };
   }
+
+  // Every command RunCommandAsync has driven. Only the UI thread runs
+  // commands, but the set is locked so a stray caller cannot corrupt it.
+  private static readonly HashSet<string> DrivenCommands = new(StringComparer.OrdinalIgnoreCase);
 
   internal static async Task RunCommandAsync(Document doc, string commandName, params object[] tokens)
   {
+    // Editor.CommandAsync completes once its tokens are consumed, even when the
+    // command is still waiting for more input (the acedCmdC coroutine model),
+    // so a stuck command is detected below and a cancel is queued. That cancel
+    // only runs after the host work returns, so check here that no command an
+    // earlier request drove is still at a prompt before feeding it this
+    // request's answers.
+    string[] driven;
+    lock (DrivenCommands)
+    {
+      driven = DrivenCommands.ToArray();
+    }
+    var stale = FindActiveCommand(driven);
+    if (stale != null)
+    {
+      var stalePrompt = Convert.ToString(App.GetSystemVariable("LASTPROMPT"));
+      QueueCancel(doc);
+      throw new JsonRpcDispatchException(
+        CommandIncompleteCode,
+        $"-{stale} from an earlier request is still waiting at prompt '{stalePrompt}', so -{commandName} was not started. A cancel was queued; retry the request.");
+    }
+
+    lock (DrivenCommands)
+    {
+      DrivenCommands.Add(commandName);
+    }
+
     await doc.Editor.CommandAsync(tokens);
 
     // A token the command did not expect (renamed prompt in a future release,
     // unexpected paper-size dialog, ...) leaves the command waiting for input.
     // Detect that instead of reporting success, record the pending prompt for
     // diagnosis, and queue a cancel so the editor is usable again.
-    var activeCommands = Convert.ToString(App.GetSystemVariable("CMDNAMES")) ?? string.Empty;
-    if (activeCommands.Split('\'').Any(name => name.TrimStart('-', '_', '.').Equals(commandName, StringComparison.OrdinalIgnoreCase)))
+    if (FindActiveCommand([commandName]) != null)
     {
       var lastPrompt = Convert.ToString(App.GetSystemVariable("LASTPROMPT"));
-      try
-      {
-        doc.SendStringToExecute("\x03\x03", true, false, false);
-      }
-      catch
-      {
-        // Best effort; the error below still reports the stuck command.
-      }
+      QueueCancel(doc);
       throw new JsonRpcDispatchException(
         CommandIncompleteCode,
         $"-{commandName} did not complete; it was waiting at prompt '{lastPrompt}'. A cancel was queued. The prompt chain may differ in this Civil 3D release.");
+    }
+  }
+
+  private static string? FindActiveCommand(IReadOnlyCollection<string> commandNames)
+  {
+    if (commandNames.Count == 0)
+    {
+      return null;
+    }
+
+    var activeCommands = Convert.ToString(App.GetSystemVariable("CMDNAMES")) ?? string.Empty;
+    return activeCommands
+      .Split('\'')
+      .Select(name => name.TrimStart('-', '_', '.'))
+      .FirstOrDefault(name => commandNames.Contains(name, StringComparer.OrdinalIgnoreCase));
+  }
+
+  private static void QueueCancel(Document doc)
+  {
+    try
+    {
+      doc.SendStringToExecute("\x03\x03", true, false, false);
+    }
+    catch
+    {
+      // Best effort; the caller still reports the stuck command.
     }
   }
 
@@ -814,7 +916,7 @@ public static class PlotCommands
     using var documentLock = doc.LockDocument();
     using var transaction = doc.Database.TransactionManager.StartTransaction();
     var snapshots = ReadLayouts(doc.Database, transaction)
-      .Select(layout => new LayoutSnapshot(layout.LayoutName, layout.TabOrder, layout.ModelType))
+      .Select(layout => new LayoutSnapshot(layout.LayoutName, layout.TabOrder, layout.ModelType, IsInitialized(layout)))
       .ToList();
     transaction.Commit();
     return snapshots;
@@ -924,19 +1026,6 @@ public static class PlotCommands
 
   private static string LayoutNotFoundMessage(string name, IEnumerable<LayoutSnapshot> available) =>
     $"Layout '{name}' was not found. Available paper-space layouts: {Preview(available.OrderBy(item => item.TabOrder).Select(item => item.Name))}.";
-
-  private static void DeleteExisting(string path)
-  {
-    if (!File.Exists(path)) return;
-    try
-    {
-      File.Delete(path);
-    }
-    catch (Exception ex)
-    {
-      throw new JsonRpcDispatchException("CIVIL3D.FILE_IO_ERROR", $"Could not replace '{path}' (is it open in a PDF viewer?): {ex.Message}");
-    }
-  }
 
   private static void TryDelete(string path)
   {

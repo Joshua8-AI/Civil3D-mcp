@@ -193,6 +193,46 @@ bridge end-to-end run in civil3d-automation `bridge/TESTING.md`). Still open:
   `available`; `bridge_create_toposolid sampling: "tin"` and the pipe and
   parcel tools should use the new data.
 
+## cubic review fixes ported from upstream PRs #17-#19 (2026-09-26, offline only)
+
+Ported from the review-fix commits on `upstream/plot-publish`,
+`upstream/xref-datashortcut-compare` and `upstream/bridge-support-reads`.
+None of these have been re-run live.
+
+- **Plot/publish (#17):** the plotter and `-PUBLISH` write to a hidden,
+  unpredictable temp name in the locked output folder; it is checked to be a
+  regular file and renamed over the final name (`FileBoundary.BeginExternalWrite`),
+  so a link planted at the final name after validation cannot redirect output,
+  and a failed plot no longer deletes an existing PDF. `RunCommandAsync` refuses
+  to start a command while one it drove earlier is still at a prompt (the queued
+  Ctrl-C only runs after the host work returns). `publish_sheet_set` skips (with
+  a warning) or rejects never-initialized layouts. Whitespace-only `pageSetup`,
+  `paperSize`, `plotStyleTable` and `device` are rejected by the schema.
+- **Data shortcuts / compare (#18):** unreadable reference health is `unknown`,
+  not `current`; repair/promote prefer a reference over a same-named local object;
+  `view_frame_group` reaches `data_shortcut_repair`; `civil.truncated`; malformed
+  snapshots are `INVALID_INPUT`; block attributes and TIN/grid triangle count and
+  areas are in the fingerprint.
+- **Bridge reads (#19):** inner height falls back to `InnerDiameterOrWidth` only
+  for circular pipes (otherwise null heights/inverts); the units/info reads return
+  the raw coordinate-system code without a library lookup. The same defensive
+  inner-height read was applied to the `civil3d_compare` pipe-network fingerprint,
+  where a throwing `InnerHeight` dropped the whole network.
+
+| check | result |
+|---|---|
+| `npm run build` | ok |
+| `npm test` | 472 passed / 38 files |
+| `npm run docs:check` | current (209 entries) |
+| `npm run version:check` | agree on 1.2.1 |
+| `npm run test:startup` | 211 tools |
+| `test:p2-boundaries`, `test:compare-diff`, `test:bridge-math` | passed |
+| `.\scripts\build-2027.ps1` (no `-Install`) | 0 warnings, 0 errors |
+
+Live checks still to do: plot and publish to a fresh and an existing PDF
+(temp file renamed, no `.mcp-tmp.pdf` left behind); publish with a
+never-opened layout; `civil3d_compare` on a network with a non-circular pipe.
+
 ## Deploy-script regression checks
 
 - `install-bundle.ps1` derives `SeriesMin/Max` from the build's target framework

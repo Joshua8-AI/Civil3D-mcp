@@ -714,19 +714,27 @@ one or more operations; alias rows show an em dash in the **Operations** column.
 
 Read-only actions are never approval-gated. `plot_layouts_to_pdf` and
 `publish_sheet_set` declare the `export` capability, so they need a
-`civil3d_request_approval` token; output paths must be absolute `.pdf` paths
-under `CIVIL3D_EXPORT_ROOTS` and existing files are only replaced with
-`overwrite: true`. Pass `asJob: true` to run either as a `civil3d_job` and poll
-`civil3d_job action=status`. Results list every file written with its size,
-page count (when detectable), and per-layout status.
+`civil3d_request_approval` token. `outputPath` (a single layout, or the
+combined `publish_sheet_set` PDF) must be an absolute `.pdf` file path;
+`outputDirectory` is an absolute folder in which one `<prefix><layout>.pdf` is
+written per layout. Both must sit under `CIVIL3D_EXPORT_ROOTS` (which falls
+back to `CIVIL3D_FILE_ROOTS`, then the user's Documents folder), and existing
+files are only replaced with `overwrite: true`. Pass `asJob: true` to run
+either as a `civil3d_job` and poll `civil3d_job action=status`. Results list
+every file written with its size, page count (when detectable), and
+per-layout status. `publish_sheet_set` without a sheet list skips (and
+reports) layouts that have never been initialized, because PUBLISH refuses
+them.
 
 Why commands rather than the PlotEngine API: live testing on Civil 3D 2027
 found `PlotFactory`/`PlotEngine` crash-prone when driven from a command
 context (the context this plugin runs in), while `-PLOT` with
 `BACKGROUNDPLOT=0` fails with a message instead of taking the host down. The
 plugin validates every answer before starting the command, never saves page
-setup changes, restores `FILEDIA`/`CMDECHO`/`BACKGROUNDPLOT`/`CTAB`, and
-verifies the PDF was actually written. `publish_sheet_set` reads drawings from
+setup changes, restores `FILEDIA`/`CMDECHO`/`BACKGROUNDPLOT`/`CTAB`, has the
+plotter write a hidden temporary file in the locked output folder, and
+verifies it before renaming it over the requested name (so a failed plot
+never deletes an existing PDF). `publish_sheet_set` reads drawings from
 disk, so it refuses an unsaved active drawing unless `requireSaved: false`.
 
 </details>
@@ -893,7 +901,7 @@ The canonical `civil3d_project` tool also has:
 
 | Action | Description |
 |------|-------------|
-| `data_shortcut_references` | List every data-shortcut reference in the current drawing with its source drawing, source object name/type/handle, whether the source lies in the current project, the working folder, or elsewhere, and a status of `current`, `out_of_date`, `broken`, or `source_missing`. Read-only, not gated. |
+| `data_shortcut_references` | List every data-shortcut reference in the current drawing with its source drawing, source object name/type/handle, whether the source lies in the current project, the working folder, or elsewhere, and a status of `current`, `out_of_date`, `broken`, `source_missing`, or `unknown` (Civil 3D could not report the reference's health; `isValid`/`isStale` are then null). Read-only, not gated. |
 | `data_shortcut_repair` | Point a broken or moved reference at a new source drawing (`objectType`, `objectName`, `sourcePath`, optional `autoRepairOther`) through `DataShortcuts.RepairBrokenDRef`. `sourcePath` must be a `.dwg` inside the plugin's import roots. Approval required. |
 | `data_shortcut_sync` | Now runs `_AeccSynchronizeReferences`, the command name taken from the 2027 CUIx. |
 | `data_shortcut_promote` | Now preselects the reference and queues `_AeccPromoteReference`, so it no longer only returns manual steps. Corridors still cannot be promoted. |
@@ -905,7 +913,7 @@ The canonical `civil3d_project` tool also has:
 
 | Action (`civil3d_xref`) | Description |
 |------|-------------|
-| `list` | Every xref with its saved path, the path it was found at, status (`loaded`, `unloaded`, `unreferenced`, `not_found`, `unresolved`, `orphaned`), attach or overlay, nesting and parents, and instance count. Read-only, not gated. |
+| `list` | Every xref with its saved path and `pathType` (`absolute`, `relative`, or `none` for AutoCAD's "No path", a bare file name found through the search paths), the path it was found at, status (`loaded`, `unloaded`, `unreferenced`, `not_found`, `unresolved`, `orphaned`, `unknown`), attach or overlay, nesting and parents, and instance count. Read-only, not gated. |
 | `attach` / `overlay` | Attach or overlay a `.dwg` (`path`, optional `name`, `pathType` `absolute`/`relative`, `insert`, `insertionPoint`, `scale`, `rotation`, `layer`). Needs approval. |
 | `detach` / `reload` / `unload` | Act on `name` or `names`. Needs approval. |
 | `bind` | Bind loaded xrefs, with `bindType` `bind` (keeps `xref$0$` prefixes) or `insert` (merges the symbols). Needs approval. |
@@ -922,11 +930,13 @@ Every path passes the plugin's filesystem boundary: it must be absolute, inside 
 
 | Action | Description |
 |------|-------------|
-| `drawing` | Compare the active drawing with another DWG (`otherPath`), which is read as a side database with `Database.ReadDwgFile` and never opened as a document. Returns entities added, removed, and modified, grouped by type and layer and matched by handle, plus Civil 3D object changes matched by kind and name: alignment length, stations, and geometry hash; profile PVIs; surface point count and elevations; pipe network counts, pipe inverts, and structure rims and sumps; corridor baselines. |
+| `drawing` | Compare the active drawing with another DWG (`otherPath`), which is read as a side database with `Database.ReadDwgFile` and never opened as a document. Returns entities added, removed, and modified, grouped by type and layer and matched by handle, plus Civil 3D object changes matched by kind and name: alignment length, stations, and geometry hash; profile PVIs; surface point count, elevations, and (TIN and grid surfaces) triangle count and 2D/3D area; pipe network counts, pipe inverts, and structure rims and sumps; corridor baselines. |
 | `snapshot` | Write a JSON fingerprint of the active drawing to `outputPath` (`.json`, inside the export roots, written atomically, `overwrite` defaults to false). |
 | `compare_snapshot` | Diff the active drawing against a snapshot (`snapshotPath`, `.json`, inside the import roots), for example to see what changed since the last submittal. |
 
-`maxDetails` (default 200, maximum 5000) caps the rows listed in each detail group. It never caps the counts.
+`snapshot` writes through the export roots and `compare_snapshot` reads through the import roots. Both default to `CIVIL3D_FILE_ROOTS`; if you set `CIVIL3D_EXPORT_ROOTS` and `CIVIL3D_IMPORT_ROOTS` separately, keep snapshots in a folder covered by both.
+
+`maxDetails` (default 200, maximum 5000) caps the rows listed in each detail group. It never caps the counts. `details.truncated` and `civil.truncated` report when rows were left out.
 
 </details>
 
@@ -939,9 +949,9 @@ methods directly; these MCP actions expose the same data. All coordinates are dr
 | Tool / action | Plugin method | Description |
 |------|------|-------------|
 | `civil3d_surface` `get_tin_vertices` | `getSurfaceTinVertices` | `{name, boundary?: [{x,y}] (≥3 points), maxPoints?}` → `{surfaceName, surfaceType: "TIN"\|"Grid", vertices: [{x,y,z}], totalVertexCount, returnedVertexCount, truncated, decimation, boundaryApplied, units, lengthUnit, ...}`. TIN vertices come from visible triangles only (points hidden by boundaries are excluded); grid surfaces return their visible grid points; TIN volume surfaces are rejected with `CIVIL3D.INVALID_INPUT`. Over `maxPoints` (default 50,000, max 100,000) the vertices are sorted by X, Y and decimated with an even stride, so the same surface always returns the same subset. Coordinates are rounded to 6 decimals, which keeps 100,000 vertices near 6 MB, under the 8 MiB `CIVIL3D_MAX_RESPONSE_BYTES` default. |
-| `civil3d_parcel` `get_geometry` | `getParcelGeometry` | `{siteName, parcelName, maxArcSegmentAngle? (degrees, default 5)}` → `{name, vertices: [{x,y}], closed: true, boundaryVertices: [{x,y,bulge}], segments: [{type: "line"\|"arc", start, end, bulge, length, center?, radius?, sweepAngleDeg?}], area, perimeter, computedArea, geometrySource, units, lengthUnit, notes}`. Reads the boundary through the typed curve API (the parcel's base curve, then `GetGeCurve`, then `Explode`), never reflection. `vertices` is the polygon with arcs densified and the closing point not repeated; `boundaryVertices` are the true vertices with AutoCAD bulges (`tan(sweep/4)`, positive = counter-clockwise). `perimeter` and `computedArea` are computed from the segments, including arcs; `area` is Civil 3D's own value. |
+| `civil3d_parcel` `get_geometry` | `getParcelGeometry` | `{siteName, parcelName, maxArcSegmentAngle? (degrees, default 5)}` → `{name, vertices: [{x,y}], closed: true, boundaryVertices: [{x,y,bulge}], segments: [{type: "line"\|"arc", start, end, bulge, length, center?, radius?, sweepAngleDeg?}], area, perimeter, computedArea, geometrySource, units, lengthUnit, notes}`. Reads the boundary through the typed curve API (the parcel's base curve, then `GetGeCurve`, then `Explode`), never reflection. `vertices` is the polygon with arcs densified and the closing point not repeated; `boundaryVertices` are the true vertices with AutoCAD bulges (`tan(sweep/4)`, positive = counter-clockwise). `perimeter` and `computedArea` are computed from the segments, including arcs; `area` is Civil 3D's own value. Parcels with holes (for example a road right-of-way) return only the outer loop; interior loops are not returned, and the resulting difference between `computedArea` and `area` is reported in `notes`. |
 | `civil3d_drawing` `units` | `getDrawingUnits` | `{}` → `{insunits (raw INSUNITS int), insunitsName, lengthUnit ("Feet", "USSurveyFeet", "Meters", ...), lengthUnitSource, isUsSurveyFoot, metersPerUnit, mmPerUnit, linearUnits (legacy), civilLinearUnit ("Feet"\|"Meters"), civilImperialToMetricConversion ("InternationalFoot"\|"UsSurveyFoot"), civilLengthUnit, civilAngularUnit, angularUnit, aunits, lunits, luprec, ..., unitsConsistent, warnings}`. `lengthUnit` follows INSUNITS and falls back to the Civil 3D drawing settings when INSUNITS is Undefined; a disagreement between the two (for example INSUNITS Feet while Civil 3D converts with the US survey foot) sets `unitsConsistent: false` with a warning. |
-| `civil3d_pipe` `get` | `getPipeNetwork` | Each pipe now also has `startPoint`/`endPoint` `{x,y,z}` (centreline), `startInvert`/`endInvert` and `startCrown`/`endCrown` (centreline ∓ inner height / 2), `innerDiameter`, `outerDiameter`, `innerHeight`, `outerHeight`, `wallThickness`, `crossSectionalShape` and `length2d`. Existing fields are unchanged. `get_pipe` (`getPipe`) returns the same pipe fields. |
+| `civil3d_pipe` `get` | `getPipeNetwork` | Each pipe now also has `startPoint`/`endPoint` `{x,y,z}` (centreline), `startInvert`/`endInvert` and `startCrown`/`endCrown` (centreline ∓ inner height / 2; when the part does not report an inner height, the inner diameter is used only for a circular section, otherwise the height, inverts and crowns are `null`), `innerDiameter`, `outerDiameter`, `innerHeight`, `outerHeight`, `wallThickness`, `crossSectionalShape` and `length2d`. Existing fields are unchanged. `get_pipe` (`getPipe`) returns the same pipe fields. |
 
 `getDrawingInfo` (`civil3d_drawing info`) and `getCoordinateSystemInfo` (`civil3d_coordinate_system`) also gain a
 `lengthUnit` field. Their `linearUnits` field still reports both kinds of feet as `"feet"`.
