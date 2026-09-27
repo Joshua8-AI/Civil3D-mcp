@@ -34,27 +34,69 @@ wedged the plugin until Civil 3D restarted (`docs/FINDINGS.md` in
 `Joshua8-AI/civil3d-automation` has the original field report). The fix is
 `fix-no-document-deadlock` / upstream PR #8.
 
-### Pending live verification: `civil3d_plot` (feature/plot-publish)
+### Live on Civil 3D 2027 — 2026-09-26 (plot, xref, compare, bridge reads)
+
+Plugin from `civil3d-2027-support` at `35b5600`, installed with
+`build-2027.ps1 -Install`. Calls went straight to the plugin on 8757 through
+the repo's own `build/utils/ConnectionManager.js` (the approval gate lives in
+the Node server and is covered offline). Drawings: copies of the 2027 Civil
+Tutorials `Pipe Networks-1A.dwg` (meters, NH83; 2 TIN surfaces, 56 parcels),
+`Pipe Networks-3.dwg` (feet; 1 gravity network, 11 pipes / 12 structures) and
+`Plan Production-Plan Profile Sheets-Create.dwg` (2 layouts, 6 page setups),
+placed under Documents (the default file root).
+
+| scenario | result |
+|---|---|
+| `npm run test:live-plugin`, zero documents | health OK; `CIVIL3D.NO_DRAWING` in 6 ms |
+| `getDrawingUnits` (meters drawing / feet drawing) | `Meters` / `Feet`, `unitsConsistent: true` |
+| `getSurfaceTinVertices` EG (23,092 vertices) | full set in 163 ms (1.07 MB); `maxPoints: 5` → even stride, `truncated: true` |
+| `getParcelGeometry` rectangular lot / lot with an arc | `computedArea` = `area` to 0.001 m²; `geometrySource: baseCurve:Polyline` |
+| `getParcelGeometry` road ROW (parcel with holes) | outer loop only: 77,140 vs 20,913 m², flagged in `notes` — **known gap** |
+| `getPipeNetwork` Pipe Networks-3 | **was failing** (`Retrieve attribute failed` on network style / parts list); fixed in `35b5600`: 11 pipes + 12 structures in 131 ms, `style`/`partsList` null, all new pipe fields filled, inverts match `civil3d_compare` |
+| `plotListLayouts` / `plotListPageSetups` / `plotListPlotters` | 2 layouts / 6 setups / 19 devices (2.4 s for the device list) |
+| `plotLayoutsToPdf` Letter layout on DWG To PDF.pc3 | refused up front with a `paperSize` hint (no stuck `-PLOT`) |
+| `plotLayoutsToPdf` `allLayouts` + `paperSize: "ANSI A (11.00 x 8.50 Inches)"` | 2 PDFs in 1.6 s; Layout2 content checked visually |
+| `plotPublishSheetSet` right after plotting | `CIVIL3D.CONFLICT` (plotting marks the drawing modified) |
+| `plotPublishSheetSet` `requireSaved: false`, `keepDsd: true` | 2-sheet PDF in 3.1 s; generated DSD accepted by 2027 `-PUBLISH` |
+| `listXrefs` / `overlayXref` (relative) / `unloadXrefs` / `detachXrefs` | correct statuses and stored `.\Parcel-1A.dwg` |
+| `reloadXrefs`, `bindXrefs` | **were hanging to the 120 s timeout** (work done, control never returned); fixed in `7a7fac9` via `-XREF`: reload 80 ms, repath 95 ms, bind (insert) 209 ms |
+| `writeDrawingSnapshot` / `compareDrawingSnapshot` | 28 KB fingerprint in 124 ms / diff in 336 ms |
+| `compareDrawings` against a DWG open in another tab | side database read, 376 ms |
+| `listDataShortcutReferences` | empty list, working folder reported |
+
+Not exercised live: `data_shortcut_repair` / `promote` / `sync` (the tutorial
+drawings have no data-shortcut references), `asJob` plotting, overwrite and
+path-boundary refusals, zero-document plot calls, grid/volume surfaces for
+`getSurfaceTinVertices`, US-survey-foot drawings for `getDrawingUnits`.
+
+Autodesk's own AutoCAD MCP (`AutoCAD-MCP-Server-2027.bundle`, not ours):
+its `MCPHTTPSTART` command exists only when `ACMCP_TOOLS_CONFIG_FILE` points at
+a config with `EnableHttpServer: true`, and then fails with
+`FileNotFoundException: ModelContextProtocol.AspNetCore 0.4.0.0` — the 2027
+bundle does not ship its HTTP host, so it cannot be registered as an external
+MCP server.
+
+### Live checklist: `civil3d_plot` (feature/plot-publish)
 
 Offline only so far: plugin compiles against 2027 refs, vitest covers schemas,
 approval classification, routing and job registration, and the FileBoundary
 harness covers the directory lock used while the plotter writes (2026-09-26 on
 the branch: `npm test` 437 passed / 34 files, `docs:check` current at 207
-entries, `build-2027.ps1` 0 warnings / 0 errors). None of the
-following has been run against a live Civil 3D 2027 yet:
+entries, `build-2027.ps1` 0 warnings / 0 errors). Live results from
+2026-09-26 are in the table above; rows still marked pending were not run:
 
 | scenario | how | last result |
 |---|---|---|
-| Discovery | `civil3d_plot` `list_layouts`, `list_page_setups`, `list_plotters` (with and without `device: "DWG To PDF.pc3"`) | pending |
+| Discovery | `civil3d_plot` `list_layouts`, `list_page_setups`, `list_plotters` (with and without `device: "DWG To PDF.pc3"`) | passed 2026-09-26 |
 | Zero documents | close all drawings, call `list_layouts` and `plot_layouts_to_pdf` | pending (expect `CIVIL3D.NO_DRAWING` fast) |
 | Plot one layout | approval, then `plot_layouts_to_pdf` with `layoutNames: [..]`, `outputPath` under Documents | pending |
-| Plot all layouts | `allLayouts: true`, `outputDirectory`; check per-layout bytes/pageCount, CTAB and BACKGROUNDPLOT restored | pending |
+| Plot all layouts | `allLayouts: true`, `outputDirectory`; check per-layout bytes/pageCount, CTAB and BACKGROUNDPLOT restored | passed 2026-09-26 (2 layouts, 1.6 s) |
 | Page setup / paper override | `pageSetup`, then `paperSize` + `plotStyleTable: "monochrome.ctb"` | pending |
 | Overwrite guard | repeat without `overwrite` (expect `CIVIL3D.CONFLICT`), then with `overwrite: true` | pending |
 | Path boundary | `outputDirectory` outside export roots (expect `CIVIL3D.PATH_NOT_ALLOWED`, nothing plotted) | pending |
-| Prompt-chain drift | a layout whose paper is not on DWG To PDF.pc3 (expect up-front `INVALID_INPUT`, no stuck `-PLOT`) | pending |
-| Publish multi-sheet | save drawing, `publish_sheet_set` with 2+ layouts; confirm page count and order; `keepDsd: true` to inspect the DSD | pending (DSD `Type=6` and the `-PUBLISH` prompt chain are unverified on 2027) |
-| Publish unsaved guard | modify drawing, `publish_sheet_set` (expect `CIVIL3D.CONFLICT`) | pending |
+| Prompt-chain drift | a layout whose paper is not on DWG To PDF.pc3 (expect up-front `INVALID_INPUT`, no stuck `-PLOT`) | passed 2026-09-26 |
+| Publish multi-sheet | save drawing, `publish_sheet_set` with 2+ layouts; confirm page count and order; `keepDsd: true` to inspect the DSD | passed 2026-09-26 (2 sheets, DSD accepted by 2027) |
+| Publish unsaved guard | modify drawing, `publish_sheet_set` (expect `CIVIL3D.CONFLICT`) | passed 2026-09-26 (plotting itself marks the drawing modified) |
 | As job | `asJob: true`, poll `civil3d_job status`, cancel mid-batch | pending |
 ## Xrefs, data-shortcut references, drawing comparison (2026-09-26, `feature/xref-datashortcut-compare`)
 
@@ -70,8 +112,9 @@ Offline, on the branch:
 | P1/P2/P4 harness still green | `npm run test:p2-boundaries` | passed |
 | Startup smoke | `npm run test:startup` | 210 registered tools |
 
-**Live verification is still pending.** Civil 3D was not running and nothing
-was deployed. Run these with the plugin loaded and `CIVIL3D_IMPORT_ROOTS` /
+**Partly verified live on 2026-09-26** (see the live table above: list,
+overlay, unload, reload, repath, bind, detach, compare, snapshot). Still to
+run with the plugin loaded and `CIVIL3D_IMPORT_ROOTS` /
 `CIVIL3D_EXPORT_ROOTS` covering the test folders:
 
 - `civil3d_xref list` on a drawing with one attached, one overlaid, one
@@ -122,8 +165,8 @@ assemblies (metadata only): `TinSurface.GetTriangles(bool)`,
 `Parcel.BaseCurve`/`GetGeCurve`/`Explode`, `Pipe.InnerHeight`/`OuterDiameterOrWidth`,
 `SettingsUnitZone.DrawingUnits`/`ImperialToMetricConversion`.
 
-**Live verification is still pending.** Civil 3D was not running and nothing
-was deployed. With the plugin loaded:
+**Mostly verified live on 2026-09-26** (see the live table above, and the
+bridge end-to-end run in civil3d-automation `bridge/TESTING.md`). Still open:
 
 - `getSurfaceTinVertices` on a TIN surface with an outer boundary: check that
   `totalVertexCount` excludes points outside the boundary, that a `boundary`
