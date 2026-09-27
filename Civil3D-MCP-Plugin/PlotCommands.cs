@@ -620,7 +620,7 @@ public static class PlotCommands
       "_Y");                        // Proceed with plot?
   }
 
-  private static async Task RunCommandAsync(Document doc, string commandName, params object[] tokens)
+  internal static async Task RunCommandAsync(Document doc, string commandName, params object[] tokens)
   {
     await doc.Editor.CommandAsync(tokens);
 
