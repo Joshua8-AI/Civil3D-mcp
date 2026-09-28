@@ -4,6 +4,33 @@
 
 ### Fixed
 
+- `civil3d_profile view_create` always failed on Civil 3D 2027 ("ProfileView.Create
+  returned null"): the plugin probed `ProfileView.Create` by reflection with
+  argument orders that do not exist. It now calls the typed
+  `Create(alignmentId, insertPosition, name, bandSetId, styleId)` overload,
+  falling back to the drawing's first profile view style and band set when none
+  is named. New optional `layer`; the result reports name, handle, layer, style
+  and band set.
+- The profile view band-set lookup read `ProfileViewBandSetStyles` from the
+  label-set styles root, where it does not exist, so it always returned a null
+  id (`view_band_set` imported nothing). It now reads `Styles.ProfileViewBandSetStyles`.
+- A requested layer that did not exist was silently replaced by the current
+  layer (e.g. `create_layout layer:"C-ROAD-DES"` landed on layer 0). Missing
+  layers are now created; an invalid layer name is `CIVIL3D.INVALID_INPUT`.
+  Applies to every create path that takes `layer` (profiles, alignments,
+  offset alignments, polylines, text, lines, profile views).
+- `civil3d_profile check_k_values` computed K with A as a decimal grade
+  difference (0.028) instead of percent (2.8) — a 280 ft curve reported
+  K ≈ 9,980 — and always used a metric table, so 50 (mph) required sag 9 /
+  crest 4. K is now L / (100·|g2−g1|), checked against the AASHTO
+  stopping-sight-distance design K tables in mph (ft/%) or km/h (m/%). New
+  optional `speedUnits` (`mph` | `km/h`) defaults from the drawing's length
+  unit; speeds between rows use the next higher row (and say so); speeds
+  outside the table are `CIVIL3D.INVALID_INPUT`. Per curve it now returns
+  grades in percent, A in percent, K, required K, start/end and PVI station.
+- `civil3d_profile get` reported symmetric parabolas as `asymmetric_parabola`
+  ("parabolasymmetric" contains "asymmetric"); they are now
+  `symmetric_parabola`. The response schema still accepts the old `parabola`.
 - With no document open, drawing-dependent requests hung and wedged the
   plugin's execution gate; they now fail fast with `CIVIL3D.NO_DRAWING`, and
   `civil3d_drawing new` works from zero documents.

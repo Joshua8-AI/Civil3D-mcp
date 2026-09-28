@@ -233,6 +233,44 @@ Live checks still to do: plot and publish to a fresh and an existing PDF
 (temp file renamed, no `.mcp-tmp.pdf` left behind); publish with a
 never-opened layout; `civil3d_compare` on a network with a non-circular pipe.
 
+## Profile view, layer and K-value fixes (2026-09-28, offline only)
+
+Three bugs found live on Civil 3D 2027: `civil3d_profile view_create` always
+failed (reflection probed `ProfileView.Create` overloads that do not exist; now
+the typed 2027 overload, with first-style/band-set fallback and a new `layer`);
+a missing requested layer silently became the current layer (now created, all
+10 `GetLayerId` callers are inside `CivilExecution.WriteAsync`); and
+`check_k_values` used A as a decimal and a metric-only table (now
+K = L / (100·|g2−g1|) against AASHTO SSD tables in mph or km/h, `speedUnits`
+defaulting from the drawing units). `get` also reported symmetric parabolas as
+asymmetric; fixed. The band-set lookup, which always returned a null id, was
+fixed along the way.
+
+| check | result |
+|---|---|
+| `npm run build` | ok |
+| `npm test` | 480 passed / 39 files (new `tests/profile_domain.test.ts`, 8 tests) |
+| `npm run docs:check` | current (209 entries) |
+| `npm run version:check` | agree on 1.2.1 |
+| `npm run test:startup` | 211 tools |
+| `npm run test:vertical-curve-math` (new harness) | passed |
+| `test:p2-boundaries`, `test:compare-diff`, `test:bridge-math` | passed |
+| `.\scripts\build-2027.ps1` (no `-Install`) | 0 warnings, 0 errors |
+
+**Live verification pending** (needs the new DLL installed, so Civil 3D must be
+closed first):
+- `view_create` with no style/band set, with named ones, with an unknown style
+  (warning), and with `layer` set to a new layer; check name, handle, layer and
+  style in the result and in the drawing.
+- `create_layout layer:"C-ROAD-DES"` on a drawing without that layer: the layer
+  is created and the profile is on it; an invalid name (e.g. `A<B`) is rejected.
+- `check_k_values` on the 280 ft, −1.4 % → +1.4 % sag: K = 100, required 96 at
+  50 mph (feet drawing, default mph); 52 mph uses the 55 mph row with a note;
+  25 mph is rejected; `speedUnits:"km/h"` on the feet drawing converts lengths.
+- `get` on a profile with an `add_curve` symmetric parabola reports
+  `symmetric_parabola`.
+- `view_band_set` now imports the named band set (it previously got a null id).
+
 ## Deploy-script regression checks
 
 - `install-bundle.ps1` derives `SeriesMin/Max` from the build's target framework
