@@ -260,8 +260,8 @@ fixed along the way.
 **Live verification pending** (needs the new DLL installed, so Civil 3D must be
 closed first):
 - `view_create` with no style/band set, with named ones, with an unknown style
-  (warning), and with `layer` set to a new layer; check name, handle, layer and
-  style in the result and in the drawing.
+  (now `CIVIL3D.INVALID_INPUT`, see below), and with `layer` set to a new
+  layer; check name, handle, layer and style in the result and in the drawing.
 - `create_layout layer:"C-ROAD-DES"` on a drawing without that layer: the layer
   is created and the profile is on it; an invalid name (e.g. `A<B`) is rejected.
 - `check_k_values` on the 280 ft, −1.4 % → +1.4 % sag: K = 100, required 96 at
@@ -270,6 +270,42 @@ closed first):
 - `get` on a profile with an `add_curve` symmetric parabola reports
   `symmetric_parabola`.
 - `view_band_set` now imports the named band set (it previously got a null id).
+
+## Style lookups and plot-to-final-path (2026-09-28, offline only)
+
+Two more bugs found live on Civil 3D 2027. Style names: `create_layout` style
+"Design Profile" produced an "Existing Ground Profile" profile and
+`view_create` style "Profile View" warned the style was missing. Every style
+name read as null on 2027 (StyleBase's set-only `Name` hides the readable base
+`Name`), so no named lookup matched and each fell back to the first style. Now
+names are read through `DBObject.Name`, the reflection boundary resolves the
+readable declaration, and an unknown name is `CIVIL3D.INVALID_INPUT` listing
+the available names. Plot: the "open in viewer when done" option opened the
+hidden temp name the plotter had been given; the plotter now writes the final
+path (see `FileBoundary.BeginExternalWrite` for the link protections and the
+backup/restore on failure).
+
+| check | result |
+|---|---|
+| `npm run build` | ok |
+| `npm test` | 480 passed / 39 files |
+| `npm run docs:check` | current (209 entries) |
+| `npm run version:check` | agree on 1.2.1 |
+| `npm run test:startup` | 211 tools |
+| `npm run test:style-lookups` (new harness) | 28 checks passed |
+| `npm run test:p2-boundaries` (external-write checks rewritten: fresh, overwrite, failed/partial/rejected output restores the old file, planted hard link, junction, symbolic link) | passed |
+| `test:compare-diff`, `test:bridge-math`, `test:vertical-curve-math` | passed |
+| `.\scripts\build-2027.ps1` (no `-Install`) | 0 warnings, 0 errors |
+
+**Live verification pending** (needs the new DLL installed):
+- `create_layout` / `create_from_surface` with style "Design Profile": the
+  result's `style` and the drawing both say "Design Profile"; a misspelled
+  style is `CIVIL3D.INVALID_INPUT` listing the styles.
+- `view_create` style "Profile View": no warning, the view uses that style.
+- `plot_layouts_to_pdf` and `publish_sheet_set` with "open in viewer when done"
+  on: the viewer opens the real PDF. Repeat with `overwrite: true` over an
+  existing PDF (replaced, no `.*.mcp-bak` left behind) and with the existing
+  PDF held open by a viewer that locks it (clear `FILE_IO_ERROR`, old PDF kept).
 
 ## Deploy-script regression checks
 

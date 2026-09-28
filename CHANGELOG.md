@@ -21,6 +21,15 @@
   parcel style, parcel area label style, section view style and band set,
   group plot style) and the name reads in the label and pipe-network style
   lookups.
+- `civil3d_plot` plot/publish: with a PDF device set to "open in viewer when
+  done", the viewer opened the hidden `.<name>.<guid>.mcp-tmp.pdf` the plotter
+  had been pointed at, which had already been renamed to the final name ("file
+  not found"). The plotter now writes the requested path itself. The output
+  directory chain stays locked during the plot; a link or junction at the
+  final name is refused; with `overwrite` an existing PDF is moved to a backup
+  and restored if the plot fails; after the plot the output must be a regular
+  file with one hard link (a link planted during the plot is removed and the
+  call fails) before it is verified.
 - `civil3d_profile view_create` always failed on Civil 3D 2027 ("ProfileView.Create
   returned null"): the plugin probed `ProfileView.Create` by reflection with
   argument orders that do not exist. It now calls the typed
