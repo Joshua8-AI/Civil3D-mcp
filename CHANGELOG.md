@@ -4,6 +4,23 @@
 
 ### Fixed
 
+- Style lookups by name never matched on Civil 3D 2027, so a requested style
+  was silently replaced by the drawing's first one: `create_layout` with style
+  "Design Profile" got "Existing Ground Profile", and `view_create` with style
+  "Profile View" warned the style was missing. Civil 3D 2027's `StyleBase`
+  declares a set-only `Name` that hides the readable base-class `Name`, so the
+  reflective name read returned null for every style, label set and band set.
+  Names are now read through the documented `DBObject.Name`, and the
+  reflection boundary resolves a readable (or writable) declaration when a
+  derived class hides one. A style, label set or band set name that does not
+  exist is now `CIVIL3D.INVALID_INPUT` listing the available names instead of
+  a silent substitution; no name still means the drawing's first one.
+  `create_layout` / `create_from_surface` now report the style and layer
+  applied. Affects every `LookupUtils` style lookup (alignment, profile,
+  surface, alignment/profile label set, profile view style and band set,
+  parcel style, parcel area label style, section view style and band set,
+  group plot style) and the name reads in the label and pipe-network style
+  lookups.
 - `civil3d_profile view_create` always failed on Civil 3D 2027 ("ProfileView.Create
   returned null"): the plugin probed `ProfileView.Create` by reflection with
   argument orders that do not exist. It now calls the typed
