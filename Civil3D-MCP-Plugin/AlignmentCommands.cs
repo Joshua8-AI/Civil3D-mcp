@@ -181,6 +181,15 @@ public static class AlignmentCommands
         "createAlignment requires either 'polylineHandle' or at least two 'points'.");
     }
 
+    // The server schema already rejects both; check here too so a direct
+    // caller is not silently given the polyline and ignored points.
+    if (!string.IsNullOrWhiteSpace(polylineHandle) && pointsNode != null)
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.INVALID_INPUT",
+        "createAlignment takes either 'polylineHandle' or 'points', not both.");
+    }
+
     // curveRadius: insert a curve of exactly this radius at every interior PI.
     // addCurves: let Civil 3D fit curves using the drawing's default radius.
     //   Defaults to true for 'points' (the original behavior) and false for
