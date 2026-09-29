@@ -395,8 +395,6 @@ public static class PlotCommands
       OutputFile file;
       try
       {
-        FileBoundary.WriteAllTextAtomic(dsdPath, BuildDsd(sheets, currentPath, outputPath), new UTF8Encoding(false), true, ".dsd");
-
         // PUBLISH writes the final path (the DSD's DWF= target) itself, so
         // "open in viewer when done" opens the real PDF. BeginExternalWrite
         // locks the directory chain, refuses a link at the final name and
@@ -404,6 +402,16 @@ public static class PlotCommands
         // the result is a regular file before it is read, and a failed
         // publish restores the previous PDF. See FileBoundary.BeginExternalWrite.
         using var output = FileBoundary.BeginExternalWrite(outputPath, overwrite);
+
+        // The DSD sits beside the PDF, so it is written under the same lock.
+        // Its DWF= line decides where -PUBLISH writes, so right before the
+        // command it is re-read from a handle that does not follow links and
+        // must still be exactly what was written (DWF= is the final path);
+        // that handle stays open, denying writes, deletes and renames, until
+        // -PUBLISH has read it.
+        var encoding = new UTF8Encoding(false);
+        var dsd = BuildDsd(sheets, currentPath, output.FinalPath);
+        FileBoundary.WriteAllTextAtomic(dsdPath, dsd, encoding, true, ".dsd");
         using (var sysvars = new SystemVariableScope())
         {
           sysvars.Set("FILEDIA", 0);
@@ -412,11 +420,14 @@ public static class PlotCommands
           sysvars.Set("PUBLISHCOLLATE", 1);
 
           cancellationToken.ThrowIfCancellationRequested();
-          await RunCommandAsync(doc, "PUBLISH", "_.-PUBLISH", dsdPath);
+          using (FileBoundary.HoldVerifiedFile(dsdPath, dsd, encoding))
+          {
+            await RunCommandAsync(doc, "PUBLISH", "_.-PUBLISH", dsdPath);
+          }
           warnings.AddRange(sysvars.RestoreWarnings());
         }
 
-        file = output.Commit(path => VerifyOutput(path, startedUtc));
+        file = output.Commit((path, stream) => VerifyOutput(path, stream, startedUtc));
       }
       finally
       {
@@ -673,12 +684,16 @@ public static class PlotCommands
       "_N",                         // Save changes to page setup?
       "_Y");                        // Proceed with plot?
 
-    return output.Commit(path => VerifyOutput(path, job.StartedUtc));
+    return output.Commit((path, stream) => VerifyOutput(path, stream, job.StartedUtc));
   }
 
-  // Every command RunCommandAsync has driven. Only the UI thread runs
-  // commands, but the set is locked so a stray caller cannot corrupt it.
-  private static readonly HashSet<string> DrivenCommands = new(StringComparer.OrdinalIgnoreCase);
+  // Invocations RunCommandAsync started that have not been seen to finish: a
+  // command still at a prompt when its tokens ran out (a cancel was queued) or
+  // one whose CommandAsync failed while the command was still active. A normal
+  // completion is removed at once, so a PLOT/PUBLISH/XREF the user starts later
+  // is never mistaken for a stale request. Only the UI thread runs commands,
+  // but the list is locked so a stray caller cannot corrupt it.
+  private static readonly List<(Document Doc, string Command)> PendingInvocations = new();
 
   internal static async Task RunCommandAsync(Document doc, string commandName, params object[] tokens)
   {
@@ -686,14 +701,9 @@ public static class PlotCommands
     // command is still waiting for more input (the acedCmdC coroutine model),
     // so a stuck command is detected below and a cancel is queued. That cancel
     // only runs after the host work returns, so check here that no command an
-    // earlier request drove is still at a prompt before feeding it this
-    // request's answers.
-    string[] driven;
-    lock (DrivenCommands)
-    {
-      driven = DrivenCommands.ToArray();
-    }
-    var stale = FindActiveCommand(driven);
+    // earlier request left at a prompt in this document is still there before
+    // feeding it this request's answers.
+    var stale = FindActiveCommand(PendingCommandsFor(doc));
     if (stale != null)
     {
       var stalePrompt = Convert.ToString(App.GetSystemVariable("LASTPROMPT"));
@@ -703,18 +713,37 @@ public static class PlotCommands
         $"-{stale} from an earlier request is still waiting at prompt '{stalePrompt}', so -{commandName} was not started. A cancel was queued; retry the request.");
     }
 
-    lock (DrivenCommands)
+    var invocation = (doc, commandName);
+    lock (PendingInvocations)
     {
-      DrivenCommands.Add(commandName);
+      PendingInvocations.Add(invocation);
     }
 
-    await doc.Editor.CommandAsync(tokens);
+    var stillActive = true;
+    try
+    {
+      await doc.Editor.CommandAsync(tokens);
+    }
+    finally
+    {
+      // Forget the invocation once the command is no longer active (normal
+      // completion, or a failure that ended it); keep it only while it may
+      // still be at a prompt.
+      stillActive = FindActiveCommand([commandName]) != null;
+      if (!stillActive)
+      {
+        lock (PendingInvocations)
+        {
+          PendingInvocations.Remove(invocation);
+        }
+      }
+    }
 
     // A token the command did not expect (renamed prompt in a future release,
     // unexpected paper-size dialog, ...) leaves the command waiting for input.
     // Detect that instead of reporting success, record the pending prompt for
     // diagnosis, and queue a cancel so the editor is usable again.
-    if (FindActiveCommand([commandName]) != null)
+    if (stillActive)
     {
       var lastPrompt = Convert.ToString(App.GetSystemVariable("LASTPROMPT"));
       QueueCancel(doc);
@@ -724,6 +753,36 @@ public static class PlotCommands
     }
   }
 
+  // Commands this runner left unfinished in <paramref name="doc"/>. Entries
+  // whose command is no longer active (the queued cancel ran) are dropped, and
+  // so are entries for documents that have been closed.
+  private static string[] PendingCommandsFor(Document doc)
+  {
+    var active = ActiveCommandNames();
+    var open = App.DocumentManager.Cast<Document>().ToList();
+    lock (PendingInvocations)
+    {
+      PendingInvocations.RemoveAll(entry =>
+        !open.Contains(entry.Doc)
+        || (ReferenceEquals(entry.Doc, doc) && !active.Contains(entry.Command, StringComparer.OrdinalIgnoreCase)));
+      return PendingInvocations
+        .Where(entry => ReferenceEquals(entry.Doc, doc))
+        .Select(entry => entry.Command)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+    }
+  }
+
+  private static string[] ActiveCommandNames()
+  {
+    var activeCommands = Convert.ToString(App.GetSystemVariable("CMDNAMES")) ?? string.Empty;
+    return activeCommands
+      .Split('\'')
+      .Select(name => name.TrimStart('-', '_', '.'))
+      .Where(name => name.Length > 0)
+      .ToArray();
+  }
+
   private static string? FindActiveCommand(IReadOnlyCollection<string> commandNames)
   {
     if (commandNames.Count == 0)
@@ -731,10 +790,7 @@ public static class PlotCommands
       return null;
     }
 
-    var activeCommands = Convert.ToString(App.GetSystemVariable("CMDNAMES")) ?? string.Empty;
-    return activeCommands
-      .Split('\'')
-      .Select(name => name.TrimStart('-', '_', '.'))
+    return ActiveCommandNames()
       .FirstOrDefault(name => commandNames.Contains(name, StringComparer.OrdinalIgnoreCase));
   }
 
@@ -750,35 +806,40 @@ public static class PlotCommands
     }
   }
 
-  private static OutputFile VerifyOutput(string path, DateTime startedUtc)
+  // Reads the output only through the stream Commit opened on the checked
+  // handle; the path is used for messages and the result only.
+  private static OutputFile VerifyOutput(string path, FileStream? stream, DateTime startedUtc)
   {
-    var info = new FileInfo(path);
-    if (!info.Exists)
+    if (stream == null)
     {
       throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", $"The plot command finished but no PDF was written to '{path}'.");
     }
-    info.Refresh();
+    var lastWriteUtc = File.GetLastWriteTimeUtc(stream.SafeFileHandle);
     // Allow for coarse filesystem timestamps.
-    if (info.LastWriteTimeUtc < startedUtc.AddSeconds(-2))
+    if (lastWriteUtc < startedUtc.AddSeconds(-2))
     {
       throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", $"'{path}' exists but was not written by this plot run.");
     }
-    if (info.Length == 0)
+    var length = stream.Length;
+    if (length == 0)
     {
       throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", $"'{path}' was written but is empty.");
     }
 
-    return new OutputFile(info.FullName, info.Length, CountPdfPages(info), info.LastWriteTimeUtc);
+    return new OutputFile(path, length, CountPdfPages(stream), lastWriteUtc);
   }
 
   // Heuristic: counts uncompressed /Type /Page objects. Returns null when the
   // file is too large to scan or uses compressed object streams (count 0).
-  private static int? CountPdfPages(FileInfo info)
+  private static int? CountPdfPages(FileStream stream)
   {
     try
     {
-      if (info.Length > PageCountReadLimitBytes) return null;
-      var text = Encoding.Latin1.GetString(File.ReadAllBytes(info.FullName));
+      if (stream.Length > PageCountReadLimitBytes) return null;
+      var bytes = new byte[stream.Length];
+      stream.Position = 0;
+      stream.ReadExactly(bytes);
+      var text = Encoding.Latin1.GetString(bytes);
       var count = PdfPageObject.Matches(text).Count;
       return count > 0 ? count : null;
     }
