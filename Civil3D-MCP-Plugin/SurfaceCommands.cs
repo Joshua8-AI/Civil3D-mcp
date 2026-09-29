@@ -59,7 +59,7 @@ public static class SurfaceCommands
           ["area2d"] = terrainProperties?.SurfaceArea2D,
           ["area3d"] = terrainProperties?.SurfaceArea3D,
           ["numberOfPoints"] = generalProperties.NumberOfPoints,
-          ["numberOfTriangles"] = GetTriangleCount(surface),
+          ["numberOfTriangles"] = CivilObjectUtils.GetTriangleCount(surface),
         },
         ["boundingBox"] = new Dictionary<string, object?>
         {
@@ -149,7 +149,7 @@ public static class SurfaceCommands
         ["area2d"] = terrainProperties?.SurfaceArea2D,
         ["area3d"] = terrainProperties?.SurfaceArea3D,
         ["numberOfPoints"] = generalProperties.NumberOfPoints,
-        ["numberOfTriangles"] = GetTriangleCount(surface),
+        ["numberOfTriangles"] = CivilObjectUtils.GetTriangleCount(surface),
       };
     });
   }
@@ -748,7 +748,7 @@ public static class SurfaceCommands
         ["area2d"] = terrainProperties?.SurfaceArea2D,
         ["area3d"] = terrainProperties?.SurfaceArea3D,
         ["numberOfPoints"] = generalProperties.NumberOfPoints,
-        ["numberOfTriangles"] = GetTriangleCount(surface),
+        ["numberOfTriangles"] = CivilObjectUtils.GetTriangleCount(surface),
         ["units"] = new Dictionary<string, object?>
         {
           ["horizontal"] = units,
@@ -1197,8 +1197,6 @@ public static class SurfaceCommands
     _ => null,
   };
 
-  private static int? GetTriangleCount(CivilSurface surface) =>
-    surface is TinSurface tinSurface ? tinSurface.GetTinProperties().NumberOfTriangles : null;
 
   private static ObjectId CreateTinSurface(string name, ObjectId styleId) => TinSurface.Create(name, styleId);
 
