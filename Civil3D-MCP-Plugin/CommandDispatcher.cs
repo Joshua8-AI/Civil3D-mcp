@@ -79,6 +79,7 @@ public static class CommandDispatcher
       "calculateSurfaceVolume" => SurfaceCommands.CalculateSurfaceVolumeAsync(parameters),
       "getSurfaceVolumeReport" => SurfaceCommands.GetSurfaceVolumeReportAsync(parameters),
       "calculateSurfaceVolumeByRegion" => SurfaceCommands.CalculateSurfaceVolumeByRegionAsync(parameters),
+      "calculateSurfaceVolumeToDatum" => SurfaceCommands.CalculateSurfaceVolumeToDatumAsync(parameters),
       "analyzeSurfaceSlope" => SurfaceCommands.AnalyzeSurfaceSlopeAsync(parameters),
       "analyzeSurfaceElevation" => SurfaceCommands.AnalyzeSurfaceElevationAsync(parameters),
       "analyzeSurfaceDirections" => SurfaceCommands.AnalyzeSurfaceDirectionsAsync(parameters),
