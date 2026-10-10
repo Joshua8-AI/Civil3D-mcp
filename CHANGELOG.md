@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- Every plugin call hung until Civil 3D restarted once any COM client had sent
+  Civil 3D a command (verified on 2027: one `SendCommand("(princ) ")` from
+  another process is enough). After that, Civil 3D never runs another
+  `ExecuteInCommandContextAsync` callback, and every host operation used that
+  route. An `Application.Idle` watcher now runs next to the command-context hop
+  (ported from jorgegarcias60/Civil3D-mcp#1 and #2): it fails fast with
+  `CIVIL3D.HOST_BUSY` while a command, prompt or modal dialog holds Civil 3D
+  for 15 s, and when the hop has not started after 5 s of idle time it takes
+  over for the rest of the session. Reads then run from the Idle tick with an
+  `OpenCloseTransaction`, which keeps the drawing's undo history (a regular
+  transaction under a document lock outside a command wipes it). Writes,
+  xref changes and command sequences (plot, publish) run inside the plugin's
+  own `C3DMCPHOP` command, started through COM, so edits stay undoable.
+  `getCivil3DHealth` reports `hostRoute` (`commandContext` or `fallback`).
 - Style lookups by name never matched on Civil 3D 2027, so a requested style
   was silently replaced by the drawing's first one: `create_layout` with style
   "Design Profile" got "Existing Ground Profile", and `view_create` with style

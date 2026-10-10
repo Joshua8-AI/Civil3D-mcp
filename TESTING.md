@@ -330,10 +330,44 @@ TIN surface EG, 1,688 points, two hide boundaries; five ARCH D 36 x 24 layouts):
 | `createAlignment` radii [300, null] / [300, 200] / [300] / curveRadius 250 | curves R300 / R300 + R200 / R300 / R250 at both PIs, read back from the alignment entities |
 | radii with curveRadius; radii [0]; radius too big for its tangents | `INVALID_INPUT`; `INVALID_INPUT`; reported in `curveFailures`, the PI stays sharp |
 
-Known: after the civil3d-driver runs anything through the command line in the
-same session, `ExecuteInCommandContextAsync` callbacks stop running and every
-plugin call hangs (`getCivil3DHealth` shows the operation in progress) until
-Civil 3D restarts. Not seen without the driver.
+The hang seen during this run (every call stuck after the civil3d-driver used
+the command line) is fixed below.
+
+## Command-context wedge: cause and fallback route (2026-10-10, live)
+
+Cause, reproduced on Civil 3D 2027 with the plugin alone: after Civil 3D
+started and a drawing was open, one COM `SendCommand("(princ) ")` from another
+process (PowerShell) was enough. From then on no `ExecuteInCommandContextAsync`
+callback ran, not even one queued from the main thread, and every plugin call
+hung holding the host gate until Civil 3D restarted. Meanwhile
+`Application.Idle` kept firing (373 ticks in 3 s) and `CMDACTIVE` was 0. None of
+these brought the route back: `WM_NULL` every 250 ms for 10 s, `WM_MOUSEMOVE`,
+a Shift key down/up, another COM command, or switching the active document
+away and back. jorgegarcias60/Civil3D-mcp#1 hit the same state after a LISP
+prompt left open over COM.
+
+Fix on `fix/command-context-wedge`: the Idle watcher from jorgegarcias60#1/#2,
+reads from the Idle tick with an `OpenCloseTransaction`, and writes and command
+sequences inside the plugin's `C3DMCPHOP` command, started over COM. Offline:
+`npm test` 496 passed / 42 files (new `host_route_fallback.test.ts`),
+`docs:check` current, `build-2027.ps1` 0 warnings / 0 errors.
+
+Live, on a copy of the HW 03 drawing:
+
+| scenario | result |
+|---|---|
+| before the wedge: read, `createAlignment` U-1, plots, `list_layouts` | normal route (`hostRoute: commandContext`), unchanged results |
+| one COM `SendCommand("(princ) ")`, then `getDrawingInfo` | answered in 5.1 s (the grace period); `hostRoute: fallback` from then on |
+| further reads (`getDrawingInfo`, `listSurfaces`, `calculateSurfaceVolumeToDatum`) | 0.1 s each, same values as before the wedge |
+| `createAlignment` U-2 | created through `C3DMCPHOP` in 0.1 s |
+| `plotLayoutsToPdf` (a `-PLOT` sequence) | plotted through `C3DMCPHOP` in 1.2 s, landscape |
+| `UNDO 1`, repeated | undid the plot step, then U-2, then U-1 (made before the wedge): the undo history survived the Idle reads and the edits are undoable |
+| a LISP `getstring` prompt left open over COM, then a write | `CIVIL3D.HOST_BUSY` after 15.0 s; the prompt kept waiting, nothing was typed into it |
+| Esc, then the same write | created in 32 ms |
+
+Not run live: xref changes (`ExecuteLockedWithoutTransactionAsync`) in the
+fallback route, `asJob` operations in the fallback route, a modal dialog in the
+fallback route (covered by jorgegarcias60#2 before the wedge).
 
 ## Deploy-script regression checks
 

@@ -25,6 +25,10 @@ public static class DrawingCommands
       ["pluginVersion"] = typeof(PluginEntry).Assembly.GetName().Version?.ToString(),
       ["drawingLoaded"] = doc != null,
       ["operationInProgress"] = status.OperationInProgress,
+      // "commandContext" normally; "fallback" once ExecuteInCommandContextAsync
+      // stopped running callbacks (reads via Application.Idle, writes and
+      // commands via the C3DMCPHOP command) until Civil 3D restarts.
+      ["hostRoute"] = CivilExecution.CommandContextWedged ? "fallback" : "commandContext",
       ["currentOperation"] = status.CurrentOperation,
       ["queueDepth"] = status.QueueDepth,
       ["queueCapacity"] = status.QueueCapacity,
