@@ -307,6 +307,34 @@ backup/restore on failure).
   existing PDF (replaced, no `.*.mcp-bak` left behind) and with the existing
   PDF held open by a viewer that locks it (clear `FILE_IO_ERROR`, old PDF kept).
 
+## Volume to datum, plot area / Model tab / orientation, alignment radii (2026-10-10, live)
+
+Upstream: #22 (`volume_to_datum`), #17 (three commits added), and per-PI `radii`
+(built on jorgegarcias60's #12; not submitted). Offline on this branch: `npm test`
+492 passed / 41 files, `docs:check` current (209 entries), `version:check` 1.2.1,
+`build-2027.ps1` 0 warnings / 0 errors.
+
+Live on Civil 3D 2027 with this build, against a copy of the HW 03 drawing (feet;
+TIN surface EG, 1,688 points, two hide boundaries; five ARCH D 36 x 24 layouts):
+
+| scenario | result |
+|---|---|
+| `calculateSurfaceVolumeToDatum` EG, 200 x 200 ft square, datum 740 / 760 / 790 | fill 939,719 / 139,719 / 0, cut 0 / 0 / 1,060,281 ft^3; a 1 ft sampled integral of `FindElevationAtXY` agrees within 0.4 ft^3 |
+| same, self-crossing boundary | `CIVIL3D.INVALID_INPUT` (Civil 3D throws `ArgumentException`) |
+| `plotLayoutsToPdf` default area, ARCH D 36 x 24 at rotation 0 | 36 x 24 landscape page (was 24 x 36 portrait, cut off, before the orientation fix) |
+| same, ARCH D 24 x 36 at rotation 90 | 36 x 24 landscape page; `list_layouts` reports both as landscape |
+| `plotArea` `extents`, `window` [0,0,18,12] | plotted; the window page shows the lower-left quarter of the sheet |
+| Model, ANSI B, `extents` / `window` | whole drawing / the window, fit and centred |
+| layout + Model in one batch | 2 PDFs |
+| Model with `plotArea: "layout"`; `window` without corners | `CIVIL3D.INVALID_INPUT`, nothing plotted |
+| `createAlignment` radii [300, null] / [300, 200] / [300] / curveRadius 250 | curves R300 / R300 + R200 / R300 / R250 at both PIs, read back from the alignment entities |
+| radii with curveRadius; radii [0]; radius too big for its tangents | `INVALID_INPUT`; `INVALID_INPUT`; reported in `curveFailures`, the PI stays sharp |
+
+Known: after the civil3d-driver runs anything through the command line in the
+same session, `ExecuteInCommandContextAsync` callbacks stop running and every
+plugin call hangs (`getCivil3DHealth` shows the operation in progress) until
+Civil 3D restarts. Not seen without the driver.
+
 ## Deploy-script regression checks
 
 - `install-bundle.ps1` derives `SeriesMin/Max` from the build's target framework
