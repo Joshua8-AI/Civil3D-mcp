@@ -620,8 +620,7 @@ public static class PlotCommands
       PlotSettings source = namedSetup ?? layout;
       var paper = ResolvePaper(pdfMedia, paperSize, source.CanonicalMediaName, layout.LayoutName);
       var rotation = source.PlotRotation;
-      var landscape = rotation is PlotRotation.Degrees090 or PlotRotation.Degrees270;
-      if (orientation != null) landscape = orientation == "landscape";
+      var landscape = orientation != null ? orientation == "landscape" : IsLandscape(source);
       var styleSheet = plotStyleTable ?? source.CurrentStyleSheet;
 
       jobs.Add(new PlotJob
@@ -939,6 +938,18 @@ public static class PlotCommands
     return summary;
   }
 
+  // -PLOT's Portrait/Landscape answer is the orientation of the plotted page,
+  // while PlotRotation turns the drawing relative to the paper as the device
+  // defines it, and a medium such as "ARCH D (36.00 x 24.00 Inches)" is already
+  // wider than tall. So the page is landscape when exactly one of the two holds:
+  // the paper is wider than tall, or the rotation is a quarter turn.
+  private static bool IsLandscape(PlotSettings settings)
+  {
+    var paper = settings.PlotPaperSize;
+    var quarterTurn = settings.PlotRotation is PlotRotation.Degrees090 or PlotRotation.Degrees270;
+    return (paper.X > paper.Y) != quarterTurn;
+  }
+
   private static Dictionary<string, object?> ToPlotSettingsSummary(PlotSettings settings)
   {
     var rotation = settings.PlotRotation;
@@ -949,7 +960,7 @@ public static class PlotCommands
       ["paperUnits"] = settings.PlotPaperUnits.ToString(),
       ["paperWidth"] = settings.PlotPaperSize.X,
       ["paperHeight"] = settings.PlotPaperSize.Y,
-      ["orientation"] = rotation is PlotRotation.Degrees090 or PlotRotation.Degrees270 ? "landscape" : "portrait",
+      ["orientation"] = IsLandscape(settings) ? "landscape" : "portrait",
       ["rotation"] = rotation.ToString(),
       ["plotType"] = settings.PlotType.ToString(),
       ["plotStyleTable"] = NullIfEmpty(settings.CurrentStyleSheet),

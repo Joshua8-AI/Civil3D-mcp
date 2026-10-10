@@ -392,6 +392,15 @@ describe("civil3d_plot routing", () => {
 });
 
 describe("civil3d_plot native implementation guards", () => {
+  it("takes the page orientation from the paper's own shape and the rotation", () => {
+    // A medium such as ARCH D (36 x 24) is already landscape at rotation 0;
+    // judging by the rotation alone plotted it on a portrait page, cut off.
+    const code = pluginCode("PlotCommands.cs");
+    expect(code).toContain("return (paper.X > paper.Y) != quarterTurn;");
+    expect(code).toContain('IsLandscape(source)');
+    expect(pluginSource("PlotCommands.cs")).toContain('IsLandscape(settings) ? "landscape" : "portrait"');
+  });
+
   it("strips C# comments and every string form before the code guards run", () => {
     const sample = [
       'var a = $"{prefix ?? name + "-"}{Sanitize(x)}" + ".pdf"; // PlotEngine',
