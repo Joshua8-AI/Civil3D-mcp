@@ -112,6 +112,12 @@ const ListPageSetupsArgsSchema = z.object({
   action: z.literal("list_page_setups"),
 });
 
+// Plot area: a paper-space layout defaults to "layout" (the sheet at 1:1); the
+// Model tab, which has no layout area, defaults to "extents" scaled to fit.
+// "window" corners are in the plotted space's own units: paper units on a
+// layout, drawing units on the Model tab.
+const PlotAreaSchema = z.enum(["layout", "extents", "window"]);
+
 // The plugin treats a whitespace-only override as absent, so reject it here
 // instead of silently plotting with the layout's own settings.
 const NonBlankStringSchema = z.string().refine((value) => value.trim().length > 0, "must not be blank");
@@ -132,6 +138,8 @@ export const PlotLayoutsToPdfArgsSchema = z.object({
   paperSize: NonBlankStringSchema.optional(),
   plotStyleTable: NonBlankStringSchema.optional(),
   orientation: OrientationSchema.optional(),
+  plotArea: PlotAreaSchema.optional(),
+  windowCorners: z.array(z.number()).length(4).optional(),
   overwrite: z.boolean().optional(),
   continueOnError: z.boolean().optional(),
   asJob: z.boolean().optional(),
@@ -153,6 +161,13 @@ export const PlotLayoutsToPdfArgsSchema = z.object({
   }
   if (args.outputPath && !/\.pdf$/i.test(args.outputPath)) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "outputPath must end in .pdf.", path: ["outputPath"] });
+  }
+  if ((args.plotArea === "window") !== Boolean(args.windowCorners)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "plotArea 'window' needs windowCorners [x1, y1, x2, y2], and windowCorners needs plotArea 'window'.",
+      path: ["windowCorners"],
+    });
   }
   if (args.outputPath && (args.allLayouts || (args.layoutNames?.length ?? 0) > 1)) {
     context.addIssue({
@@ -196,6 +211,8 @@ export function toPlotLayoutsParameters(args: PlotLayoutsToPdfArgs) {
     paperSize: args.paperSize,
     plotStyleTable: args.plotStyleTable,
     orientation: args.orientation,
+    plotArea: args.plotArea,
+    windowCorners: args.windowCorners,
     overwrite: args.overwrite ?? false,
     continueOnError: args.continueOnError ?? true,
   };
@@ -321,7 +338,7 @@ export const PLOT_DOMAIN_DEFINITION: DomainToolDefinition = {
       toolName: "civil3d_plot",
       displayName: "Civil 3D Plot",
       description:
-        "Lists layouts, page setups, and plot devices, and plots paper-space layouts to PDF (one file per layout) or publishes them as one multi-sheet PDF. " +
+        "Lists layouts, page setups, and plot devices, and plots layouts (paper-space, or the Model tab by name) to PDF (one file per layout) or publishes paper-space layouts as one multi-sheet PDF. " +
         "Uses the -PLOT/-PUBLISH commands with BACKGROUNDPLOT=0 and the 'DWG To PDF.pc3' device; output paths must be absolute .pdf paths inside the configured export roots. " +
         "Set asJob=true for long runs and poll civil3d_job action=status.",
       inputShape: {
@@ -334,7 +351,7 @@ export const PLOT_DOMAIN_DEFINITION: DomainToolDefinition = {
         ]),
         includeModel: z.boolean().optional().describe("list_layouts: include the Model layout."),
         device: z.string().optional().describe("list_plotters: also list paper sizes for this device (for example 'DWG To PDF.pc3')."),
-        layoutNames: z.array(z.string()).optional().describe("Layouts to plot/publish, in output order."),
+        layoutNames: z.array(z.string()).optional().describe("Layouts to plot/publish, in output order. plot_layouts_to_pdf also accepts 'Model'."),
         allLayouts: z.boolean().optional().describe("plot_layouts_to_pdf: plot every paper-space layout in tab order."),
         sheets: z.array(PublishSheetSchema).optional().describe("publish_sheet_set: explicit sheet list; drawingPath (absolute .dwg inside the import roots) defaults to the active drawing."),
         outputDirectory: z.string().optional().describe("plot_layouts_to_pdf: absolute folder for one PDF per layout."),
@@ -344,6 +361,8 @@ export const PLOT_DOMAIN_DEFINITION: DomainToolDefinition = {
         paperSize: z.string().optional().describe("plot_layouts_to_pdf: paper size name on DWG To PDF.pc3 (overrides the layout/page setup)."),
         plotStyleTable: z.string().optional().describe("plot_layouts_to_pdf: plot style table, for example 'monochrome.ctb'."),
         orientation: OrientationSchema.optional(),
+        plotArea: PlotAreaSchema.optional().describe("plot_layouts_to_pdf: 'layout' (paper-space default, 1:1), 'extents', or 'window'. The Model tab plots 'extents' (default) or 'window', scaled to fit and centred."),
+        windowCorners: z.array(z.number()).optional().describe("plot_layouts_to_pdf with plotArea='window': [x1, y1, x2, y2] in paper units on a layout, drawing units on the Model tab."),
         overwrite: z.boolean().optional().describe("Replace existing PDFs (default false)."),
         continueOnError: z.boolean().optional().describe("plot_layouts_to_pdf: keep plotting after a layout fails (default true)."),
         requireSaved: z.boolean().optional().describe("publish_sheet_set: refuse when the drawing has unsaved changes (default true)."),
