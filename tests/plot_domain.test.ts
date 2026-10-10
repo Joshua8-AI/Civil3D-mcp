@@ -162,6 +162,20 @@ describe("civil3d_plot schemas", () => {
       layoutNames: ["C-101"],
       outputPath: "C:/Users/me/Documents/C-101.pdf",
     }).success).toBe(true);
+    expect(PlotLayoutsToPdfArgsSchema.safeParse({
+      action: "plot_layouts_to_pdf",
+      layoutNames: ["Model"],
+      outputPath: "C:/Users/me/Documents/model.pdf",
+      paperSize: "ANSI B (17.00 x 11.00 Inches)",
+      plotArea: "window",
+      windowCorners: [2000, 1300, 3000, 2000],
+    }).success).toBe(true);
+    expect(PlotLayoutsToPdfArgsSchema.safeParse({
+      action: "plot_layouts_to_pdf",
+      allLayouts: true,
+      outputDirectory: "C:/Users/me/Documents/plots",
+      plotArea: "extents",
+    }).success).toBe(true);
   });
 
   it("rejects ambiguous layout selection and output targets", () => {
@@ -179,6 +193,11 @@ describe("civil3d_plot schemas", () => {
       { layoutNames: ["C-101"], outputDirectory: "C:/out", pageSetup: "   " },
       { layoutNames: ["C-101"], outputDirectory: "C:/out", paperSize: " " },
       { layoutNames: ["C-101"], outputDirectory: "C:/out", plotStyleTable: "\t" },
+      // A window needs its corners, corners need a window, and there are four numbers.
+      { layoutNames: ["C-101"], outputDirectory: "C:/out", plotArea: "window" },
+      { layoutNames: ["C-101"], outputDirectory: "C:/out", windowCorners: [0, 0, 36, 24] },
+      { layoutNames: ["C-101"], outputDirectory: "C:/out", plotArea: "window", windowCorners: [0, 0, 36] },
+      { layoutNames: ["C-101"], outputDirectory: "C:/out", plotArea: "display" },
     ];
     for (const args of invalid) {
       expect(
@@ -302,6 +321,24 @@ describe("civil3d_plot routing", () => {
     }));
   });
 
+  it("passes the plot area and window corners through", async () => {
+    sendCommandMock.mockResolvedValue({ plotted: 1 });
+    const args = PlotLayoutsToPdfArgsSchema.parse({
+      action: "plot_layouts_to_pdf",
+      layoutNames: ["Model"],
+      outputPath: "C:/out/model.pdf",
+      plotArea: "window",
+      windowCorners: [2000, 1300, 3000, 2000],
+    });
+    await PLOT_DOMAIN_DEFINITION.actions.plot_layouts_to_pdf.execute(args);
+
+    expect(sendCommandMock).toHaveBeenCalledWith("plotLayoutsToPdf", expect.objectContaining({
+      layoutNames: ["Model"],
+      plotArea: "window",
+      windowCorners: [2000, 1300, 3000, 2000],
+    }));
+  });
+
   it("starts a job instead when asJob is set", async () => {
     sendCommandMock.mockResolvedValue({ jobId: "abc", state: "running", operation: "publish_sheet_set" });
     const args = PublishSheetSetArgsSchema.parse({
@@ -393,7 +430,7 @@ describe("civil3d_plot native implementation guards", () => {
     expect(source).toContain("FileBoundary.BeginExternalWrite(outputPath, overwrite)");
     // The plotter gets the final name, so "open in viewer when done" opens the
     // real PDF instead of a temp name that was renamed away.
-    expect(source).toMatch(/output\.FinalPath,\s*\/\/ File name/);
+    expect(source).toMatch(/tokens\.Add\(output\.FinalPath\);\s*\/\/ File name/);
     expect(source).toContain("BuildDsd(sheets, currentPath, output.FinalPath)");
     expect(source).not.toContain("TempPath");
     // The content check reads the handle Commit checked, never the path again.

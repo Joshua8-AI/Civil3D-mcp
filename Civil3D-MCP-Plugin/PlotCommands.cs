@@ -155,6 +155,8 @@ public static class PlotCommands
     var paperSize = PluginRuntime.GetOptionalString(parameters, "paperSize");
     var plotStyleTable = PluginRuntime.GetOptionalString(parameters, "plotStyleTable");
     var orientation = PluginRuntime.GetOptionalString(parameters, "orientation");
+    var plotArea = PluginRuntime.GetOptionalString(parameters, "plotArea");
+    var windowCorners = GetOptionalDoubleArray(parameters, "windowCorners");
     var overwrite = PluginRuntime.GetOptionalBool(parameters, "overwrite") ?? false;
     var continueOnError = PluginRuntime.GetOptionalBool(parameters, "continueOnError") ?? true;
 
@@ -170,11 +172,23 @@ public static class PlotCommands
     {
       throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "Parameter 'orientation' must be 'portrait' or 'landscape'.");
     }
+    if (plotArea != null && plotArea is not ("layout" or "extents" or "window"))
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "Parameter 'plotArea' must be 'layout', 'extents' or 'window'.");
+    }
+    if ((plotArea == "window") != (windowCorners != null))
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "plotArea 'window' needs 'windowCorners' [x1, y1, x2, y2], and 'windowCorners' needs plotArea 'window'.");
+    }
+    if (windowCorners != null && (windowCorners.Length != 4 || windowCorners[0] == windowCorners[2] || windowCorners[1] == windowCorners[3]))
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "'windowCorners' must be [x1, y1, x2, y2] with two distinct x and two distinct y values.");
+    }
 
     return CivilExecution.ExecuteCommandSequenceAsync<object?>(async (doc, cancellationToken) =>
     {
       // 1. Resolve and validate every job up front (read-only).
-      var jobs = PreparePlotJobs(doc, requestedLayouts, allLayouts, pageSetup, paperSize, plotStyleTable, orientation);
+      var jobs = PreparePlotJobs(doc, requestedLayouts, allLayouts, pageSetup, paperSize, plotStyleTable, orientation, plotArea, windowCorners);
       if (outputPath != null && jobs.Count != 1)
       {
         throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"'outputPath' plots exactly one layout, but {jobs.Count} layouts were selected. Use 'outputDirectory' instead.");
@@ -473,6 +487,9 @@ public static class PlotCommands
     public required string OrientationToken { get; init; }
     public required bool UpsideDown { get; init; }
     public required string StyleSheetToken { get; init; }
+    public required bool IsModel { get; init; }
+    public required string PlotAreaToken { get; init; }
+    public string[]? WindowCorners { get; init; }
     public string? PageSetup { get; init; }
     public string? OutputPath { get; set; }
     public DateTime StartedUtc { get; set; }
@@ -523,7 +540,9 @@ public static class PlotCommands
     string? pageSetup,
     string? paperSize,
     string? plotStyleTable,
-    string? orientation)
+    string? orientation,
+    string? plotArea,
+    double[]? windowCorners)
   {
     var database = doc.Database;
     using var documentLock = doc.LockDocument();
@@ -550,9 +569,9 @@ public static class PlotCommands
           ?? throw new JsonRpcDispatchException(
             "CIVIL3D.OBJECT_NOT_FOUND",
             LayoutNotFoundMessage(name, paperLayouts.Select(item => new LayoutSnapshot(item.LayoutName, item.TabOrder, false))));
-        if (layout.ModelType)
+        if (layout.ModelType && plotArea == "layout")
         {
-          throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "The Model layout cannot be plotted by this tool; plot a paper-space layout (its -PLOT prompt chain differs).");
+          throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "The Model tab has no layout plot area; use plotArea 'extents' (the default for Model) or 'window'.");
         }
         if (!selected.Contains(layout)) selected.Add(layout);
       }
@@ -572,9 +591,13 @@ public static class PlotCommands
       {
         throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Page setup '{pageSetup}' was not found. Use civil3d_plot action=list_page_setups.");
       }
-      if (namedSetup.ModelType)
+      if (selected.Any(layout => layout.ModelType != namedSetup.ModelType))
       {
-        throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"Page setup '{pageSetup}' is a model-space page setup and cannot be applied to a paper-space layout.");
+        throw new JsonRpcDispatchException(
+          "CIVIL3D.INVALID_INPUT",
+          namedSetup.ModelType
+            ? $"Page setup '{pageSetup}' is a model-space page setup and cannot be applied to a paper-space layout."
+            : $"Page setup '{pageSetup}' is a paper-space page setup and cannot be applied to the Model tab.");
       }
     }
 
@@ -611,6 +634,17 @@ public static class PlotCommands
         UpsideDown = rotation is PlotRotation.Degrees180 or PlotRotation.Degrees270,
         // "." answers "Enter plot style table name ... (enter . for none)".
         StyleSheetToken = string.IsNullOrWhiteSpace(styleSheet) ? "." : styleSheet,
+        IsModel = layout.ModelType,
+        PlotAreaToken = (plotArea ?? (layout.ModelType ? "extents" : "layout")) switch
+        {
+          "extents" => "_E",
+          "window" => "_W",
+          _ => "_L",
+        },
+        // Plain invariant decimals: the corner prompts do not accept exponents.
+        WindowCorners = windowCorners == null
+          ? null
+          : [FormatPoint(windowCorners[0], windowCorners[1]), FormatPoint(windowCorners[2], windowCorners[3])],
       });
     }
 
@@ -659,29 +693,57 @@ public static class PlotCommands
     using var output = FileBoundary.BeginExternalWrite(job.OutputPath!, overwrite);
     job.StartedUtc = DateTime.UtcNow;
 
-    await CommandLineRunner.RunAsync(
-      doc,
-      "PLOT",
+    // The prompt chains, recorded on Civil 3D 2027. A paper-space layout, any
+    // plot area: area [+ two window corners], scale, offset, plot styles?,
+    // style table, lineweights?, scale lineweights?, paper space first?, hide
+    // paperspace objects?, file, save page setup?, proceed? The Model tab asks
+    // the same up to lineweights?, then a shade plot setting instead of the
+    // three paper-space questions.
+    var tokens = new List<object>
+    {
       "_.-PLOT",
       "_Y",                         // Detailed plot configuration?
-      job.LayoutName,               // Layout name
+      job.LayoutName,               // Layout name ("Model" for the Model tab)
       DefaultPdfDevice,             // Output device
       job.PaperSize,                // Paper size (locale name for the device)
       job.PaperUnitsToken,          // Paper units
       job.OrientationToken,         // Drawing orientation
       job.UpsideDown ? "_Y" : "_N", // Plot upside down?
-      "_L",                         // Plot area = Layout
-      "1:1",                        // Plot scale (viewports carry the drawing scale)
-      "0.00,0.00",                  // Plot offset
-      "_Y",                         // Plot with plot styles?
-      job.StyleSheetToken,          // Plot style table name ("." = none)
-      "_Y",                         // Plot with lineweights?
-      "_N",                         // Scale lineweights with plot scale?
-      "_N",                         // Plot paper space first?
-      "_N",                         // Hide paperspace objects?
-      output.FinalPath,             // File name (PDF devices ask directly)
-      "_N",                         // Save changes to page setup?
-      "_Y");                        // Proceed with plot?
+      job.PlotAreaToken,            // Plot area: Layout, Extents or Window
+    };
+    if (job.WindowCorners != null)
+    {
+      tokens.Add(job.WindowCorners[0]); // Lower left corner of window
+      tokens.Add(job.WindowCorners[1]); // Upper right corner of window
+    }
+    if (job.IsModel)
+    {
+      tokens.Add("_F");             // Plot scale: fit the area to the paper
+      tokens.Add("_C");             // Plot offset: centred
+    }
+    else
+    {
+      tokens.Add("1:1");            // Plot scale (viewports carry the drawing scale)
+      tokens.Add("0.00,0.00");      // Plot offset
+    }
+    tokens.Add("_Y");                // Plot with plot styles?
+    tokens.Add(job.StyleSheetToken); // Plot style table name ("." = none)
+    tokens.Add("_Y");                // Plot with lineweights?
+    if (job.IsModel)
+    {
+      tokens.Add("_A");             // Shade plot setting: As displayed
+    }
+    else
+    {
+      tokens.Add("_N");             // Scale lineweights with plot scale?
+      tokens.Add("_N");             // Plot paper space first?
+      tokens.Add("_N");             // Hide paperspace objects?
+    }
+    tokens.Add(output.FinalPath);    // File name (PDF devices ask directly)
+    tokens.Add("_N");                // Save changes to page setup?
+    tokens.Add("_Y");                // Proceed with plot?
+
+    await CommandLineRunner.RunAsync(doc, "PLOT", tokens.ToArray());
 
     return output.Commit((path, stream) => VerifyOutput(path, stream, job.StartedUtc));
   }
@@ -932,6 +994,22 @@ public static class PlotCommands
     }
     return list;
   }
+
+  private static double[]? GetOptionalDoubleArray(JsonObject? parameters, string name)
+  {
+    if (PluginRuntime.GetParameter(parameters, name) is not JsonArray array) return null;
+    try
+    {
+      return array.Select(node => node!.GetValue<double>()).ToArray();
+    }
+    catch (Exception ex) when (ex is InvalidOperationException or FormatException or NullReferenceException)
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"Parameter '{name}' must contain only numbers.");
+    }
+  }
+
+  private static string FormatPoint(double x, double y) =>
+    string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{x:0.0#########},{y:0.0#########}");
 
   private static List<string> GetOptionalStringArray(JsonObject? parameters, string name)
   {

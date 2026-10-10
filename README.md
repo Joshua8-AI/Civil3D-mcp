@@ -702,7 +702,7 @@ one or more operations; alias rows show an em dash in the **Operations** column.
 | `civil3d_plot` | `list_layouts` | Paper-space layouts (optionally Model) with device, paper, orientation, plot style, page setup |
 | `civil3d_plot` | `list_page_setups` | Named page setups in the drawing |
 | `civil3d_plot` | `list_plotters` | Configured plot devices and plot style tables; with `device`, that device's paper sizes |
-| `civil3d_plot` | `plot_layouts_to_pdf` | One PDF per layout (`layoutNames` or `allLayouts`) into `outputDirectory`, or a single layout to `outputPath`; optional `pageSetup`, `paperSize`, `plotStyleTable`, `orientation` |
+| `civil3d_plot` | `plot_layouts_to_pdf` | One PDF per layout (`layoutNames` or `allLayouts`) into `outputDirectory`, or a single layout to `outputPath`; optional `pageSetup`, `paperSize`, `plotStyleTable`, `orientation`; `plotArea` `layout` (default), `extents` or `window` + `windowCorners`; `layoutNames: ["Model"]` plots the Model tab (extents or window, fit to the paper) |
 | `civil3d_plot` | `publish_sheet_set` | One multi-sheet PDF from `layoutNames`, `sheets` (may include other saved drawings), or every paper-space layout |
 
 Read-only actions are never approval-gated. `plot_layouts_to_pdf` and
