@@ -25,10 +25,6 @@ public static class DrawingCommands
       ["pluginVersion"] = typeof(PluginEntry).Assembly.GetName().Version?.ToString(),
       ["drawingLoaded"] = doc != null,
       ["operationInProgress"] = status.OperationInProgress,
-      // "commandContext" normally; "fallback" once ExecuteInCommandContextAsync
-      // stopped running callbacks (reads via Application.Idle, writes and
-      // commands via the C3DMCPHOP command) until Civil 3D restarts.
-      ["hostRoute"] = CivilExecution.CommandContextWedged ? "fallback" : "commandContext",
       ["currentOperation"] = status.CurrentOperation,
       ["queueDepth"] = status.QueueDepth,
       ["queueCapacity"] = status.QueueCapacity,
@@ -67,7 +63,7 @@ public static class DrawingCommands
     var requestedLimit = PluginRuntime.GetOptionalInt(parameters, "selectedObjectLimit") ?? 25;
     var selectedObjectLimit = Math.Clamp(requestedLimit, 1, 100);
 
-    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    return CivilExecution.ReadInCommandAsync<object?>((doc, civilDoc, database, transaction) =>
       new Dictionary<string, object?>
       {
         ["drawingInfo"] = BuildDrawingInfo(doc, civilDoc, database, transaction),
@@ -157,28 +153,20 @@ public static class DrawingCommands
   public static Task<object?> UndoDrawingAsync(JsonObject? parameters)
   {
     var steps = PluginRuntime.GetOptionalInt(parameters, "steps") ?? 1;
-    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    return CivilExecution.RunCommandLineAsync<object?>($"_.UNDO {steps} ", new Dictionary<string, object?>
     {
-      doc.SendStringToExecute($"_.UNDO {steps} ", true, false, false);
-      return new Dictionary<string, object?>
-      {
-        ["steps"] = steps,
-        ["action"] = "undo",
-      };
+      ["steps"] = steps,
+      ["action"] = "undo",
     });
   }
 
   public static Task<object?> RedoDrawingAsync(JsonObject? parameters)
   {
     var steps = PluginRuntime.GetOptionalInt(parameters, "steps") ?? 1;
-    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    return CivilExecution.RunCommandLineAsync<object?>($"_.MREDO {steps} ", new Dictionary<string, object?>
     {
-      doc.SendStringToExecute($"_.REDO {steps} ", true, false, false);
-      return new Dictionary<string, object?>
-      {
-        ["steps"] = steps,
-        ["action"] = "redo",
-      };
+      ["steps"] = steps,
+      ["action"] = "redo",
     });
   }
 
@@ -191,7 +179,7 @@ public static class DrawingCommands
   {
     var limit = PluginRuntime.GetOptionalInt(parameters, "limit") ?? 100;
 
-    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    return CivilExecution.ReadInCommandAsync<object?>((doc, civilDoc, database, transaction) =>
       BuildSelectedCivilObjects(doc, transaction, limit));
   }
 
