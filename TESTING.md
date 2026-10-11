@@ -51,6 +51,66 @@ wedged the plugin until Civil 3D restarted (`docs/FINDINGS.md` in
 `Joshua8-AI/civil3d-automation` has the original field report). The fix is
 `fix-no-document-deadlock` / upstream PR #8.
 
+## Host routes without the command-context hop (`fix/plugin-command-route`, 2026-10-11, live)
+
+Civil 3D 2027 on Joshua8-AI's machine, a copy of an HW drawing (TIN surfaces EG
+and EG - No Breaklines). civil3d-driver, a COM automation add-in, was loaded and
+sent commands throughout.
+
+### Diagnosis (diagnostic build, not merged)
+
+The build logged command, LISP, lock and quiescence events, and checked whether
+a queued `ExecuteInCommandContextAsync` callback runs. Each trial started Civil
+3D, checked that a callback ran, sent one trigger, then checked again (6 s).
+
+| Windows session | loaded | trigger | callback after it |
+|---|---|---|---|
+| disconnected | all add-ins | PowerShell COM `SendCommand("(princ) ")` | never ran |
+| disconnected | all add-ins | the plugin's own `C3DMCPHOP` (in-process COM) | never ran |
+| disconnected | all add-ins | in-process COM `(princ)` | never ran |
+| disconnected | all add-ins | `SendStringToExecute("(princ) ")` x3 | ran each time |
+| disconnected | this plugin only, Civil 3D started directly | PowerShell COM `(princ)` | never ran |
+| connected (RDP) | all add-ins | PowerShell COM `(princ)` x3 | ran (20-51 ms) |
+| connected (RDP) | all add-ins | `C3DMCPHOP` x2, in-process COM, driver `REGEN` x2, PowerShell `REGEN` | ran (12-34 ms) |
+
+- In the wedged state, queued callbacks never start their internal
+  `EXECUTEFUNCTION` command.
+- Meanwhile `Application.Idle` keeps firing, `CMDACTIVE` is 0, the editor is
+  quiescent and the document is unlocked.
+- Nothing revived it:
+  - waiting;
+  - `SendStringToExecute`, `PostCommandPrompt`;
+  - more COM commands;
+  - `WM_NULL`, focus, injected mouse and key input.
+
+Also found:
+- `Editor.SelectImplied` returns an error outside a `UsePickSet` command, even
+  when LISP `(ssget "_I")` sees the selection.
+- A plugin read under a document lock empties the redo stack.
+
+### This branch, live (Windows session disconnected)
+
+| check | result |
+|---|---|
+| read right after PowerShell COM and driver commands | 0.11 s |
+| 30 rounds of read + write, COM or driver command every few rounds | all ok; median 0.07 / 0.10 s, max 0.41 s; 30 alignments |
+| three reads, then command-line `UNDO 1` | removed the last write: reads add no undo step |
+| write, `undoDrawing`, `redoDrawing`, `undoDrawing` | removed, restored, removed |
+| `computeSurfaceVolume`, `calculateSurfaceVolume`, `qtySurfaceVolume` | ok; no scratch surface left in the drawing |
+| LISP `sssetfirst` of all alignments, then `getSelectedCivilObjectsInfo`, `getProjectContext` | selection reported; still selected afterwards |
+| LISP `getstring` prompt open: read, then write | `HOST_BUSY` after 15 s each; the prompt kept waiting |
+| `LINE` waiting for a point: read | `HOST_BUSY` after 15 s; `LINE` still active |
+| Esc, then read or write | 0.1 s |
+
+The same design in the Joshua8-AI fork (`civil3d-2027-support` 00b4bbd) passed
+further runs in both session states:
+- 80 requests from 8 concurrent clients;
+- a client disconnecting mid-request;
+- a modal dialog;
+- jobs, plot, publish and xref operations;
+- two drawings and zero drawings;
+- a 200-request soak (median 0.12 s).
+
 ## Deploy-script regression checks
 
 - `install-bundle.ps1` derives `SeriesMin/Max` from the build's target framework

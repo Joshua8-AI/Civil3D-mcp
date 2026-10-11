@@ -71,7 +71,7 @@ public static class DataShortcutCommands
     var description = PluginRuntime.GetOptionalString(parameters, "description");
     var projectFolder = PluginRuntime.GetOptionalString(parameters, "projectFolder");
 
-    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    return CivilExecution.ReadThenCommandLineAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       SendCommand(doc, "CreateDataShortcuts");
 
@@ -131,7 +131,7 @@ public static class DataShortcutCommands
       });
     }
 
-    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    return CivilExecution.ReadThenCommandLineAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       SendCommand(doc, commandName);
 
@@ -179,7 +179,7 @@ public static class DataShortcutCommands
       };
     }
 
-    return await CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    return await CivilExecution.ReadThenCommandLineAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       SendCommand(doc, "SynchronizeReferences");
 
@@ -374,7 +374,7 @@ public static class DataShortcutCommands
   {
     try
     {
-      doc.SendStringToExecute($"{commandName}\n", true, false, false);
+      CivilExecution.QueueCommandLine($"{commandName} ");
     }
     catch (Exception ex)
     {
