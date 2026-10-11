@@ -6,6 +6,7 @@ import {
   listRegisteredToolNames,
 } from "./tools/toolHandlerRegistry.js";
 import { executeToolCallViaOrchestrator } from "./tools/civil3d_orchestrate.js";
+import { ALWAYS_GATED_TOOLS } from "./tools/approvalPolicy.js";
 import { createLogger } from "./utils/logger.js";
 import { Civil3DRpcError } from "./utils/SocketClient.js";
 import { createRequestId, runWithRequestId } from "./utils/requestContext.js";
@@ -307,6 +308,27 @@ async function executeLegacyTool(toolName: string, parameters: Record<string, un
   }
 }
 
+// Tools that take another tool as parameters.toolName and can approve, preview
+// or run it (civil3d_docs through its orchestrate action).
+const TOOL_TARGETING_TOOLS = new Set([
+  "civil3d_request_approval",
+  "civil3d_preview_action",
+  "civil3d_orchestrate",
+  "civil3d_docs",
+]);
+
+/**
+ * Without MCP_HTTP_TOKEN any local process, also one running as another
+ * account, can call the bridge on loopback. Refuse the tools that run code with
+ * the user's rights (and approving or previewing them) in that case.
+ */
+function unauthenticatedRefusal(toolName: string, parameters: Record<string, unknown>): string | undefined {
+  const target = TOOL_TARGETING_TOOLS.has(toolName) ? parameters.toolName : toolName;
+  if (typeof target !== "string" || !ALWAYS_GATED_TOOLS.has(target)) return undefined;
+  return `${target} is not available over the HTTP bridge without authentication. ` +
+    "Set MCP_HTTP_TOKEN for the server and send it as 'Authorization: Bearer <token>' or X-MCP-Token.";
+}
+
 /**
  * Execute a tool by name. Resolution order:
  *   1. Registered MCP tool handlers (all 180+ tools)
@@ -419,6 +441,7 @@ async function handleExecute(
   request: IncomingMessage,
   response: ServerResponse,
   maxBodyBytes: number,
+  authEnabled: boolean,
 ): Promise<void> {
   try {
     const body = await readJsonBody(request, maxBodyBytes);
@@ -430,6 +453,12 @@ async function handleExecute(
     const parameters = body.parameters && typeof body.parameters === "object"
       ? body.parameters
       : {};
+
+    const refusal = authEnabled ? undefined : unauthenticatedRefusal(body.tool, parameters);
+    if (refusal) {
+      writeError(response, 403, "CIVIL3D.FORBIDDEN", refusal);
+      return;
+    }
 
     const result = await executeBridgeTool(body.tool, parameters);
     writeJson(response, 200, result);
@@ -513,7 +542,7 @@ export function startHttpBridge(options: HttpBridgeOptions = {}) {
       }
 
       if (method === "POST" && path === "/execute") {
-        await handleExecute(request, response, config.maxBodyBytes);
+        await handleExecute(request, response, config.maxBodyBytes, Boolean(config.authToken));
         return;
       }
 

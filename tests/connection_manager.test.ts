@@ -46,4 +46,30 @@ describe("withApplicationConnection", () => {
       });
     }
   });
+
+  it("passes a per-command timeout through to the connection", async () => {
+    // A plugin that reads the request and never answers.
+    const server = net.createServer((socket) => socket.resume());
+
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+
+    try {
+      const address = server.address() as net.AddressInfo;
+      vi.stubEnv("CIVIL3D_HOST", "127.0.0.1");
+      vi.stubEnv("CIVIL3D_PORT", String(address.port));
+      vi.resetModules();
+
+      const { withApplicationConnection } = await import("../src/utils/ConnectionManager.js");
+      await expect(withApplicationConnection(
+        async (client) => await client.sendCommand("runCode", {}, { timeoutMs: 200 }),
+      )).rejects.toThrow("Command timed out after 200ms: runCode");
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
 });

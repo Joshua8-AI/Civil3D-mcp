@@ -67,9 +67,10 @@ function hashParameters(parameters: JsonObject): string {
   return createHash("sha256").update(stableJson(normalized)).digest("hex");
 }
 
-// Tools whose gate CIVIL3D_APPROVAL_MODE=disabled does not lift: civil3d_run_code
-// runs arbitrary C# with the user's full rights inside Civil 3D.
-const ALWAYS_GATED_TOOLS = new Set<string>(["civil3d_run_code"]);
+// Tools whose gate CIVIL3D_APPROVAL_MODE=disabled does not lift, and that the
+// HTTP bridge refuses without MCP_HTTP_TOKEN: civil3d_run_code runs arbitrary C#
+// with the user's full rights inside Civil 3D.
+export const ALWAYS_GATED_TOOLS: ReadonlySet<string> = new Set<string>(["civil3d_run_code"]);
 
 export function isApprovalRequired(target: ApprovalTarget): boolean {
   if (ALWAYS_GATED_TOOLS.has(target.toolName)) {
