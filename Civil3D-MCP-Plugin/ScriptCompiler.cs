@@ -439,7 +439,7 @@ internal static class ScriptCompiler
 
       // A nested message loop on the main thread: the run's time budget is
       // never checked until it ends.
-      if ((typeName == "System.Windows.Forms.Application" && name == "Run")
+      if ((typeName is "System.Windows.Forms.Application" or "System.Windows.Application" && name == "Run")
           || (typeName == "System.Windows.Threading.Dispatcher" && name is "PushFrame" or "Run"))
       {
         return $"{display} runs a message loop that blocks Civil 3D until it ends.";
@@ -456,9 +456,18 @@ internal static class ScriptCompiler
       return $"Subscribing to {display}: an event handler outlives the run and would fire later, outside any time budget.";
     }
 
+    // TopTransaction hands out the run's transaction without the RunTransaction
+    // wrapper, so a Commit or Dispose through it would end the run's transaction.
+    if (symbol is IPropertySymbol && name == "TopTransaction"
+        && InheritsFrom(type, "Autodesk.AutoCAD.DatabaseServices.TransactionManager"))
+    {
+      return $"{display} is the run's own transaction: use Tr (or TransactionFor(db) for another drawing).";
+    }
+
     // The run owns Tr and the side-database transactions. A snippet's own
     // Tr.Commit() would commit the change and then make the run's commit fail,
-    // so the run would be reported as rolled back.
+    // so the run would be reported as rolled back (at run time the wrapper
+    // throws too; this says so at compile time, with the line).
     if (symbol is IMethodSymbol && name is "Commit" or "Abort" or "Dispose"
         && InheritsFrom(type, "Autodesk.AutoCAD.DatabaseServices.Transaction") && IsRunTransaction(model, node))
     {

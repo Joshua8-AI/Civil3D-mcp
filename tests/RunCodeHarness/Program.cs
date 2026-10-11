@@ -186,6 +186,7 @@ foreach (var (label, snippet) in new[] {
   ("an AutoCAD OpenFileDialog", "new Autodesk.AutoCAD.Windows.OpenFileDialog(\"t\", null, \"dwg\", \"x\", Autodesk.AutoCAD.Windows.OpenFileDialog.OpenFileDialogFlags.NoUrls).ShowDialog();"),
   ("TaskDialog", "System.Windows.Forms.TaskDialog.ShowDialog(new System.Windows.Forms.TaskDialogPage());"),
   ("WinForms Application.Run", "System.Windows.Forms.Application.Run(new System.Windows.Forms.Form());"),
+  ("WPF Application.Run", "new System.Windows.Application().Run();"),
   ("Dispatcher.PushFrame", "System.Windows.Threading.Dispatcher.PushFrame(new System.Windows.Threading.DispatcherFrame());"),
   ("Dispatcher.Run", "System.Windows.Threading.Dispatcher.Run();"),
   ("InputBox", "Microsoft.VisualBasic.Interaction.InputBox(\"x\");"),
@@ -204,6 +205,12 @@ Expect(HasError(ownCommit, ScriptCompiler.GuardDiagnosticId, 2), "both modes ref
 
 var sideAbort = Compile("TransactionFor(Db).Abort();");
 Expect(HasError(sideAbort, ScriptCompiler.GuardDiagnosticId, 1), "both modes refuse aborting a run transaction", sideAbort);
+
+foreach (var write in new[] { false, true })
+{
+  var top = Compile("var x = 1;\nvar t = Db.TransactionManager.TopTransaction;\nreturn x;", write);
+  Expect(HasError(top, ScriptCompiler.GuardDiagnosticId, 2), $"{(write ? "write" : "read")} mode refuses TopTransaction (the unwrapped run transaction)", top);
+}
 
 Expect(Compile("using var t = Db.TransactionManager.StartTransaction();\nt.Commit();", write: true).Succeeded, "write mode allows committing a transaction the snippet started");
 
