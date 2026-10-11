@@ -25,7 +25,7 @@ public static class StmCommands
         "ExportSSA is an interactive dialog and cannot bind a caller-supplied filePath. Omit filePath and choose the destination in Civil 3D.");
     }
 
-    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    return CivilExecution.ReadThenCommandLineAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       // The ExportSSA command opens the Storm and Sanitary Analysis export dialog.
       // If a filePath is provided, we note it for the user; the dialog will still appear.
@@ -33,7 +33,7 @@ public static class StmCommands
 
       try
       {
-        doc.SendStringToExecute(commandString, true, false, false);
+        CivilExecution.QueueCommandLine(commandString);
       }
       catch (System.Exception ex)
       {
@@ -69,14 +69,14 @@ public static class StmCommands
         "ImportSSA is an interactive dialog and cannot bind a caller-supplied filePath. Omit filePath and choose the source in Civil 3D.");
     }
 
-    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    return CivilExecution.ReadThenCommandLineAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       // The ImportSSA command opens the Storm and Sanitary Analysis import dialog.
       var commandString = "ImportSSA\n";
 
       try
       {
-        doc.SendStringToExecute(commandString, true, false, false);
+        CivilExecution.QueueCommandLine(commandString);
       }
       catch (System.Exception ex)
       {
@@ -104,13 +104,13 @@ public static class StmCommands
   // ──────────────────────────────────────────────
   public static Task<object?> OpenStormSanitaryAnalysisAsync(JsonObject? parameters)
   {
-    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    return CivilExecution.ReadThenCommandLineAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       var commandString = "AnalyzeGravityNetwork\n";
 
       try
       {
-        doc.SendStringToExecute(commandString, true, false, false);
+        CivilExecution.QueueCommandLine(commandString);
       }
       catch (System.Exception ex)
       {

@@ -8,7 +8,6 @@ const HealthResponseSchema = z.object({
   pluginVersion: z.string().optional(),
   drawingLoaded: z.boolean(),
   operationInProgress: z.boolean(),
-  hostRoute: z.enum(["commandContext", "fallback"]).optional(),
   currentOperation: z.string().nullable(),
   queueDepth: z.number(),
   queueCapacity: z.number(),
