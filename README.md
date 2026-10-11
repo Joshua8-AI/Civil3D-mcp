@@ -36,6 +36,10 @@
 > Still open upstream at Sacred-G (no maintainer response yet): [#10](https://github.com/Sacred-G/Civil3D-mcp/pull/10), [#11](https://github.com/Sacred-G/Civil3D-mcp/pull/11), [#12](https://github.com/Sacred-G/Civil3D-mcp/pull/12), [#13](https://github.com/Sacred-G/Civil3D-mcp/pull/13).
 >
 > Build and install it like the 2027 fork (`scripts\gather-refs-2027.ps1`, then `scripts\build-2027.ps1 -Install`); for Civil 3D 2026 build the default target (net8.0) against 2026 references. How the branch is kept up to date: [docs/FORK.md](./docs/FORK.md).
+>
+> The ApplicationPlugins bundle lives under `%APPDATA%`, which is not a trusted folder, so Civil 3D asks "Security - Unsigned Executable File" about `Civil3DMcpPlugin.dll` at every start. Where a folder is in `TRUSTEDPATHS` (Jorge's machine: `C:\CAD-Tools\...`), `scripts\install-trusted.ps1 -SourceDir <build output>` installs the plugin there instead: it copies the build to `C:\CAD-Tools\plugins\Civil3DMcp\R<series>\`, adds a marked block to `acaddoc.lsp` in the Civil 3D roaming support folder that NETLOADs it once per session, and removes the bundle. No prompt; the plugin loads when a drawing opens (not on the Start tab). `-Uninstall` reverses it.
+>
+> `civil3d_run_code` runs C# inside Civil 3D (see In-process C# below); `node scripts/run-code-file.mjs <file.cs>` runs a script file through the MCP server from a terminal.
 
 > [!IMPORTANT]
 > **This is the [Joshua8-AI](https://github.com/Joshua8-AI/Civil3D-mcp) fork with working Civil 3D 2027 support.** Differences from [upstream](https://github.com/Sacred-G/Civil3D-mcp) (all credit for the project itself goes to Sacred-G):
@@ -956,6 +960,36 @@ Every path passes the plugin's filesystem boundary: it must be absolute, inside 
 </details>
 
 <details>
+<summary><strong>In-process C# (1 tool)</strong></summary>
+
+`civil3d_run_code` compiles a C# snippet with Roslyn inside the plugin and runs it on Civil 3D's main thread with the drawing locked, for work the fixed tools and COM/LISP make too slow or cannot do: bulk geometry over thousands of objects, reading other DWGs as side databases, anything the AutoCAD/Civil 3D .NET API reaches. Measured on Civil 3D 2026: walking 96,913 objects of a 10 MB background into 547,441 sample points took 1.2 s in-process, about 20 minutes in LISP.
+
+The code runs with your full Windows rights. The tool **always** needs an approval token, even with `CIVIL3D_APPROVAL_MODE=disabled`, and the token is bound to the exact code. The plugin saves every script with a summary (`script.cs`, `run.json`) in `%LOCALAPPDATA%\Civil3DMcpPlugin\run-code\<run id>\` next to `plugin.log`. Results and files written by scripts are deleted there after 7 days; scripts and summaries are kept.
+
+| Parameter | Description |
+|------|-------------|
+| `code` | The body of `object Run()`: statements, local functions, leading `using` lines; `return` a value. Up to 200,000 characters. |
+| `mode` | `read` (default): runs from an idle tick in an open-close transaction that is never committed, and the compiler refuses the usual write APIs (`OpenMode.ForWrite`, `UpgradeOpen`, `Erase`, `AppendEntity`, Civil 3D `Create`/`Add`/`Update`..., regular transactions, drawing-setting setters). This is a guard against mistakes, not a sandbox. `write`: runs inside the plugin's `C3DMCPHOP` command in a regular transaction, committed as one undo step when the snippet returns and rolled back when it throws or runs out of time. Only changes made through `Tr` (and transactions nested in it) are rolled back, so write mode refuses open-close transactions and `ObjectId.Open`; database and system variables, files and `Session` are not. Both modes refuse Editor prompts, modal dialogs, event subscriptions and committing, aborting or disposing `Tr` (the run owns it: just return). Write responses carry `committed`. Civil 3D `Extract*` calls, `ExplodeToOwnerSpace`, layout changes and `AddDBObject` are refused in read mode too. |
+| `timeoutSeconds` | 1-90, default 30. A script cannot be stopped from outside: `Check()` ends it when the budget is used up or the request is cancelled, so call it in long loops (`ModelSpace<T>()` calls it for every entity). Once it has tripped, the run ends as a timeout or cancellation even if the script catches the exception. |
+| `maxInlineBytes` | 1 KB-1 MB, default 64 KB. Larger output or results go to `outputFile` / `resultFile` with a preview. |
+| `args` | A JSON object the script reads as `Args`. |
+
+In scope: `Doc`, `Db`, `Ed`, `Civil` (`CivilDocument`), `Tr` (the run's transaction), `Args`, `Log(x)`, `Check()`, `Open<T>(id, forWrite)`, `ModelSpace<T>(db)`, `OpenSide(path)` (another DWG as a read-only side database, disposed after the run), `TransactionFor(db)`, `WriteFile(name, text | lines)` (into the run folder) and `Session` (a dictionary kept across runs until Civil 3D closes, for plain data such as geometry read from a background). Default namespaces: `System`, `System.Linq`, `System.IO`, `System.Text`, `System.Text.Json`, `Autodesk.AutoCAD.ApplicationServices` / `DatabaseServices` / `EditorInput` / `Geometry` / `Colors`, `Autodesk.Civil`, `Autodesk.Civil.ApplicationServices` / `DatabaseServices` / `DatabaseServices.Styles`; aliases `Entity` (AutoCAD), `CivilEntity`, `Surface` (Civil 3D), `AcSurface`, `AcException`.
+
+The return value becomes JSON: points and vectors as `[x, y, z]`, ObjectIds as handles, tuples as arrays, anonymous objects and records by property. The response has `status` (`ok`, `compile_error`, `rejected`, `runtime_error`, `timeout`, `cancelled`), `errors` / `error` with snippet line numbers, `output`, `result`, `files` written by the script, `timing` and `logFolder`.
+
+```json
+{
+  "code": "var side = OpenSide((string)Args[\"dwg\"]);\nlong n = 0;\nforeach (var c in ModelSpace<Curve>(side)) n++;\nreturn new { curves = n };",
+  "args": { "dwg": "C:/Jobs/Example/Background.dwg" }
+}
+```
+
+The compiler is Roslyn (`Microsoft.CodeAnalysis` 4.8 or later). Civil 3D ships a copy (2026: 4.10), which the plugin uses so both share one version; the bundle's `roslyn\` folder is a fallback for releases without one.
+
+</details>
+
+<details>
 <summary><strong>Geometry reads for the Civil 3D-Revit bridge (actions on existing tools)</strong></summary>
 
 Read-only and never approval-gated. The Civil 3D-Revit bridge (`civil3d-automation/bridge`) calls the plugin
@@ -1034,7 +1068,7 @@ The Node MCP server reads the following variables at startup. All are optional; 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CIVIL3D_ENABLE_TOOL_ALIASES` | `false` | Set to `true` before the MCP server starts to expose all specialized aliases instead of the compact 34-tool surface. |
+| `CIVIL3D_ENABLE_TOOL_ALIASES` | `false` | Set to `true` before the MCP server starts to expose all specialized aliases instead of the compact 35-tool surface. |
 | `CIVIL3D_APPROVAL_MODE` | enforced | Set to `disabled` only in an isolated disposable test environment; production should retain parameter-bound approvals. |
 
 ### Local Autodesk help search
@@ -1197,7 +1231,7 @@ use the default loopback endpoint.
 - Use the corresponding list tool first (e.g. `civil3d_alignment` → `list` action)
 
 **"I cannot see a specialized alias in my MCP client"**
-- This is expected with the recommended compact 34-tool surface
+- This is expected with the recommended compact 35-tool surface
 - Call the canonical domain tool with its `action`, or set `CIVIL3D_ENABLE_TOOL_ALIASES=true` in the MCP server configuration
 - Restart the MCP client connection after changing the environment; changing an unrelated terminal does not update an already-running client-managed server
 - Use `civil3d://catalog/tools` or [tools.generated.md](./docs/tools.generated.md) to map aliases to canonical actions

@@ -83,6 +83,15 @@ npm ci; npm test                            # TypeScript tests
 git push myfork civil3d-2027
 ```
 
+Jorge's machine installs from a trusted folder instead of the bundle (no security prompt at each
+start): close Civil 3D, then
+`.\scripts\install-trusted.ps1 -SourceDir Civil3D-MCP-Plugin\bin\Release\net8.0-windows` (2026; the
+net10.0-windows output for 2027). It copies the build to `C:\CAD-Tools\plugins\Civil3DMcp\R<series>\`
+(under `TRUSTEDPATHS` there), loads it from a marked block in `acaddoc.lsp` and removes the bundle; the
+plugin then loads when a drawing opens. `C:\CAD-Tools\core\tools\Start-Civil3D.ps1` starts Civil 3D (also
+for an agent) and opens a drawing so the plugin comes up. A machine without that trusted folder keeps
+the bundle and answers Load Once at each start.
+
 The plugin project targets .NET 8 (Civil 3D 2026). For a quick compile check of a `fix/` branch
 against the 2027 references:
 `dotnet build Civil3D-MCP-Plugin\Civil3DMcpPlugin.csproj -c Release --restore /p:Civil3DReferencesPath=<C_References> /p:TargetFramework=net10.0-windows`.

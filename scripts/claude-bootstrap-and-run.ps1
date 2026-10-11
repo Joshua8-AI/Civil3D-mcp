@@ -21,7 +21,18 @@ if (-not (Test-Path $nodeModulesPath)) {
   }
 }
 
-if (-not (Test-Path $buildEntryPath)) {
+# Build when there is no build yet, or when the sources changed since the last one (after a git pull,
+# new tools such as civil3d_run_code appear without a manual npm run build). Output stays off stdout,
+# which carries the MCP protocol.
+$stale = -not (Test-Path $buildEntryPath)
+if (-not $stale) {
+  $builtAt = (Get-Item $buildEntryPath).LastWriteTimeUtc
+  $sources = @(Get-ChildItem (Join-Path $repoRoot "src") -Recurse -File -ErrorAction SilentlyContinue) +
+    @(Get-Item (Join-Path $repoRoot "package.json"), (Join-Path $repoRoot "tsconfig.json") -ErrorAction SilentlyContinue)
+  $stale = [bool]($sources | Where-Object { $_.LastWriteTimeUtc -gt $builtAt } | Select-Object -First 1)
+}
+
+if ($stale) {
   & $npmCommand run build --prefix $repoRoot *> $null
   if ($LASTEXITCODE -ne 0) {
     throw "Failed to build civil3d-mcp."

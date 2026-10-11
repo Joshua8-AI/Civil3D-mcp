@@ -10,7 +10,8 @@ describe("P2 security boundaries", () => {
     const violations: string[] = [];
 
     for (const fileName of readdirSync(pluginDirectory).filter((name) => name.endsWith(".cs"))) {
-      if (fileName === "FileBoundary.cs" || fileName === "PluginLog.cs") continue;
+      // PluginLog and RunCodeLog write only the plugin's own logs, next to plugin.log.
+      if (fileName === "FileBoundary.cs" || fileName === "PluginLog.cs" || fileName === "RunCodeLog.cs") continue;
       const source = readFileSync(`${pluginDirectory}/${fileName}`, "utf8");
       source.split(/\r?\n/).forEach((line, index) => {
         if (directWritePattern.test(line)) violations.push(`${fileName}:${index + 1}`);
@@ -18,6 +19,14 @@ describe("P2 security boundaries", () => {
     }
 
     expect(violations).toEqual([]);
+  });
+
+  it("confines runCode's files to its run-code folder next to plugin.log", () => {
+    const source = readFileSync(`${pluginDirectory}/RunCodeLog.cs`, "utf8");
+    expect(source).toContain("Path.GetFullPath(path)");
+    expect(source).toContain("runCode writes only inside");
+    expect(source).toContain("Expected a plain file name");
+    expect(source).toContain("WriteFile cannot use");
   });
 
   it("canonicalizes paths, enforces roots and extensions, and writes by atomic move", () => {

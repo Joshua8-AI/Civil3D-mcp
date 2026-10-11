@@ -537,6 +537,76 @@ Second set (disconnected session):
 Plugin-only session, Civil 3D started directly, connected: 40 requests with COM
 commands in between, all ok, median 0.10 s.
 
+## In-process C#: `civil3d_run_code` (2026-10-11, `jorgegarcias60/run-code`)
+
+Offline, 2026-10-11:
+
+| check | command | result |
+|---|---|---|
+| Node unit tests | `npm test` | 506 passed / 43 files (new: `tests/run_code_domain.test.ts`; boundary tests updated for `RunCodeLog.cs` and `RunCodeAssemblies.cs`) |
+| Generated tool reference | `npm run docs:check` | current (210 entries) |
+| Plugin, 2026 refs (net8) | `dotnet build ... -p:Civil3DReferencesPath=<refs-2026>` | 0 errors; output has `roslyn\Microsoft.CodeAnalysis*.dll` and no Roslyn or System.Collections.Immutable next to the plugin DLL |
+| Plugin, 2027 refs (net10) | `dotnet build ... -p:TargetFramework=net10.0-windows` | 0 errors, same layout |
+| Compiler harness, 2026 | `npm run test:run-code-compiler` | 24/24 pass (230 references) |
+| Compiler harness, 2027 | `dotnet run --project tests/RunCodeHarness -f net10.0 -- <2027 refs> <net10 plugin DLL>` | 24/24 pass (238 references) |
+
+The harness compiles real snippets against the Civil 3D reference assemblies:
+the 2026-10-11 obstacle-sampling script, the Entity/Surface aliases, compile
+errors on the right snippet line (syntax, semantic, hoisted `using`), and the
+guard: read mode refuses `OpenMode.ForWrite`, `UpgradeOpen`/`Erase`,
+`AppendEntity`, regular transactions, `Database` setters and Civil 3D `Add`,
+allows open-close transactions and entities built in memory; both modes refuse
+Editor prompts, alert dialogs and event subscriptions. A net8 harness against
+the 2027 (net10) references fails with CS1705 by design: run it on net10.
+
+Live, Civil 3D 2026, 2026-10-11 (`node scripts/live-run-code-smoke.mjs --side <10 MB background>
+--expect-drawing RUNCODE-SMOKE` on a scratch copy of the test job): **20/20 passed** on the build with
+the review fixes (18/18 on the first build). Highlights:
+- Civil 3D's own Roslyn 4.10 loaded from the AutoCAD folder (the default context resolves it; the
+  bundle's `roslyn\` fallback and the resolver were not needed).
+- First compile 1.4-1.7 s (cold Roslyn), later ones 30-300 ms.
+- A read leaves DBMOD at 0.
+- A 3 s budget ends `while (true) Check();` at 3.0 s, and Civil 3D answers the next call.
+- The 96,913-object background read as a side database and sampled into 1,516,406 points in 1.08-1.15 s.
+- A write plus one `civil3d_drawing undo` leaves nothing.
+- A write that throws, or that catches its own timeout, is rolled back (with the warning that changes
+  outside the transaction are not).
+- A `Dictionary<ObjectId,...>` result has handle keys.
+- Civil 3D asked "Security - Unsigned Executable File" for `Civil3DMcpPlugin.dll` at every start (the
+  `%APPDATA%` bundle folder is not trusted); answered Load Once.
+
+Trusted-folder install (`scripts/install-trusted.ps1`, Civil 3D 2026, 2026-10-11): the plugin copied to
+`C:\CAD-Tools\plugins\Civil3DMcp\R25.1` (under TRUSTEDPATHS) and NETLOADed from the `acaddoc.lsp` block
+loaded with no security prompt. A cold start through CAD-Tools `Start-Civil3D.ps1` (Explorer launch, the
+script opens a drawing on the Start tab, retrying until COM answers) was plugin-ready in 22 s. The
+smoke test passed 21/21, and the real 96,913-object job gave the identical 547,441 points in 1.38 s
+(`node scripts/run-code-file.mjs`). Ruled out first:
+- the bundle folder as a junction into the trusted folder: still prompted;
+- an absolute `ModuleName` in `PackageContents.xml`: ignored;
+- a registry demand-load entry (HKCU Applications, LOADCTRLS 2): never run;
+- the registry Startup Suite (`Dialogs\Appload\Startup`): never run.
+
+Live checklist (kept for 2027 and later changes):
+
+- `Test-AcadIdle.ps1` first. Plugin log shows which Roslyn loaded (`Loading
+  Microsoft.CodeAnalysis ... from ...`): on 2026 expect the AutoCAD folder (4.10),
+  or nothing logged when Civil 3D already resolves it itself.
+- Read: `return Db.Filename;` → `ok`, no undo step added (UNDO list unchanged).
+- Read, bulk: the obstacle-sampling script on a background (`OpenSide`) → `ok`,
+  timing about 1-2 s, `resultFile` for a large point list, `files` lists
+  `WriteFile` outputs.
+- Compile error and guard: a typo → `compile_error` with the line; `OpenMode.ForWrite`
+  in read mode → `rejected`.
+- Runtime error: `throw new InvalidOperationException("x");` on line 2 → `runtime_error`, `error.line` 2.
+- Timeout: `while (true) Check();` with `timeoutSeconds: 3` → `timeout` after about 3 s, Civil 3D responsive.
+- Write: add a line → `ok`, one UNDO removes it. Write that throws after adding a
+  line → `runtime_error`, the line is not in the drawing.
+- Approval: a call without `approvalToken` is refused; with a token for different
+  code it is refused.
+- Repeat the read and write cases on Civil 3D 2027 (Luis) and note which Roslyn
+  copy loaded there.
+- `install-bundle.ps1` copies `Contents\roslyn\` (2 DLLs).
+
 ## Deploy-script regression checks
 
 - `install-bundle.ps1` derives `SeriesMin/Max` from the build's target framework

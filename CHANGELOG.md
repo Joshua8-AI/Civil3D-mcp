@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+### Added
+
+- `civil3d_run_code` (plugin method `runCode`): runs a C# snippet inside Civil
+  3D, compiled with Roslyn into a uniquely named in-memory assembly (its own
+  collectible load context, unloaded after the run) and run on the main thread
+  with the drawing locked. For bulk work COM and LISP make too slow: walking
+  96,913 objects of a 10 MB background into 547,441 points took 1.2 s
+  in-process, about 20 minutes in LISP. Scripts are compiled inside the
+  already-trusted plugin, so no DLL is written and no AutoCAD security prompt
+  appears per script.
+  - Always approval-gated, even with `CIVIL3D_APPROVAL_MODE=disabled`; the
+    token is bound to the exact code. Every script is saved with a summary in
+    `run-code\<run id>\` next to `plugin.log`.
+  - `mode: "read"` (default) runs from an idle tick in an open-close
+    transaction that is never committed, and the compiler refuses write APIs
+    (a guard against mistakes, not a sandbox). `mode: "write"` runs in
+    `C3DMCPHOP`: committed as one undo step, rolled back on an exception or
+    timeout (changes outside the transaction, such as database or system
+    variables, files and `Session`, are not). Both refuse Editor prompts,
+    modal dialogs and event subscriptions.
+  - Cooperative time budget (`timeoutSeconds`, default 30, max 90): `Check()`
+    ends the script when it is used up or the request is cancelled, and stays
+    tripped if the script catches it; a script that never calls it cannot be
+    stopped.
+  - Globals: `Doc`, `Db`, `Ed`, `Civil`, `Tr`, `Args`, `Log`, `Check`,
+    `Open<T>`, `ModelSpace<T>`, `OpenSide` (read-only side databases),
+    `TransactionFor`, `WriteFile`, `Session` (kept across runs).
+  - Compile and runtime errors come back with snippet line numbers; output or
+    results over `maxInlineBytes` (default 64 KB) go to a file with a preview.
+  - Compiles against `Microsoft.CodeAnalysis` 4.8 and uses Civil 3D's own copy
+    when it has one at least that new (2026 ships 4.10); the bundle carries a
+    fallback in `Contents\roslyn\`, which `install-bundle.ps1` now copies.
+  - `tests/RunCodeHarness` (`npm run test:run-code-compiler`) checks the
+    compiler offline against the Civil 3D reference assemblies;
+    `scripts/live-run-code-smoke.mjs` (`npm run test:live-run-code`) checks a
+    running Civil 3D end to end; `scripts/run-code-file.mjs` runs a `.cs` file
+    through the MCP server from a terminal.
+- `scripts/install-trusted.ps1`: installs the plugin into a trusted folder
+  (default `C:\CAD-Tools\plugins\Civil3DMcp\R<series>`) and NETLOADs it from a
+  marked `acaddoc.lsp` block, so Civil 3D no longer asks "Security - Unsigned
+  Executable File" at every start as it does for the `%APPDATA%` bundle; removes
+  the bundle; `-Uninstall` reverses. The plugin then loads when a drawing opens.
+- `install-bundle.ps1` no longer claims the bundle folder is trusted: Civil 3D
+  2026 prompts for it at every start (answer Load Once).
+- `claude-bootstrap-and-run.ps1` rebuilds the server when `src\`,
+  `package.json` or `tsconfig.json` changed since the last build, not only
+  when there is no build: after a `git pull`, new tools appear without a
+  manual `npm run build`.
+
 ### Fixed
 
 - Every plugin call hung until Civil 3D restarted once any COM client had run
