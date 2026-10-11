@@ -26,10 +26,11 @@ internal static class ScriptCompiler
   internal const string BaseClassName = "Civil3DMcpPlugin.RunCodeScript";
   internal const string GuardDiagnosticId = "C3DMCP001";
 
-  // Namespaces every snippet can use without a using directive. Two namespaces
-  // are left out on purpose: Autodesk.AutoCAD.Runtime (its Exception hides
-  // System.Exception in every catch) and Autodesk.Civil.DatabaseServices'
-  // Entity and Surface collide with AutoCAD's, so the aliases below decide.
+  // Namespaces every snippet can use without a using directive.
+  // Autodesk.AutoCAD.Runtime is left out on purpose: its Exception hides
+  // System.Exception in every catch. Type names that two of these namespaces
+  // both declare would not compile (CS0104), so DefaultAliases names every one
+  // of them (tests/RunCodeHarness checks that none is missing).
   internal static readonly string[] DefaultUsings =
   {
     "System",
@@ -55,15 +56,46 @@ internal static class ScriptCompiler
     "Autodesk.Civil.DatabaseServices.Styles",
   };
 
+  // A name both AutoCAD and Civil 3D declare means AutoCAD's (the Civil 3D one
+  // gets a Civil prefix), except Surface and Section, which mean Civil 3D's
+  // (AutoCAD's get an Ac prefix).
   internal static readonly string[] DefaultAliases =
   {
     "AcException = Autodesk.AutoCAD.Runtime.Exception",
     "ErrorStatus = Autodesk.AutoCAD.Runtime.ErrorStatus",
+    "Application = Autodesk.AutoCAD.ApplicationServices.Application",
+    "DBObject = Autodesk.AutoCAD.DatabaseServices.DBObject",
+    "CivilDBObject = Autodesk.Civil.DatabaseServices.DBObject",
     "Entity = Autodesk.AutoCAD.DatabaseServices.Entity",
     "CivilEntity = Autodesk.Civil.DatabaseServices.Entity",
     "Surface = Autodesk.Civil.DatabaseServices.Surface",
     "AcSurface = Autodesk.AutoCAD.DatabaseServices.Surface",
-    "Application = Autodesk.AutoCAD.ApplicationServices.Application",
+    "Section = Autodesk.Civil.DatabaseServices.Section",
+    "AcSection = Autodesk.AutoCAD.DatabaseServices.Section",
+    "SectionViewStyle = Autodesk.Civil.DatabaseServices.Styles.SectionViewStyle",
+    "AcSectionViewStyle = Autodesk.AutoCAD.DatabaseServices.SectionViewStyle",
+    "Table = Autodesk.AutoCAD.DatabaseServices.Table",
+    "CivilTable = Autodesk.Civil.DatabaseServices.Table",
+    "TableStyle = Autodesk.AutoCAD.DatabaseServices.TableStyle",
+    "CivilTableStyle = Autodesk.Civil.DatabaseServices.Styles.TableStyle",
+    "Shape = Autodesk.AutoCAD.DatabaseServices.Shape",
+    "CivilShape = Autodesk.Civil.DatabaseServices.Shape",
+    "PointCloud = Autodesk.AutoCAD.DatabaseServices.PointCloud",
+    "CivilPointCloud = Autodesk.Civil.DatabaseServices.PointCloud",
+    "Graph = Autodesk.AutoCAD.DatabaseServices.Graph",
+    "CivilGraph = Autodesk.Civil.DatabaseServices.Graph",
+    "Group = Autodesk.AutoCAD.DatabaseServices.Group",
+    "RegexGroup = System.Text.RegularExpressions.Group",
+    "NurbSurface = Autodesk.AutoCAD.DatabaseServices.NurbSurface",
+    "GeNurbSurface = Autodesk.AutoCAD.Geometry.NurbSurface",
+    "TransactionManager = Autodesk.AutoCAD.DatabaseServices.TransactionManager",
+    "SystemVariableChangedEventArgs = Autodesk.AutoCAD.ApplicationServices.SystemVariableChangedEventArgs",
+    "SystemVariableChangedEventHandler = Autodesk.AutoCAD.ApplicationServices.SystemVariableChangedEventHandler",
+    "SystemVariableChangingEventArgs = Autodesk.AutoCAD.ApplicationServices.SystemVariableChangingEventArgs",
+    "SystemVariableChangingEventHandler = Autodesk.AutoCAD.ApplicationServices.SystemVariableChangingEventHandler",
+    "ThreadState = System.Threading.ThreadState",
+    "TimeZone = System.TimeZone",
+    "Trace = System.Diagnostics.Trace",
   };
 
   // A leading "using X;" / "using static X;" / "using A = X;" line of the

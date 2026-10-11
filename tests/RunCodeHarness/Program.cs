@@ -173,6 +173,33 @@ Expect(HasError(addObject, ScriptCompiler.GuardDiagnosticId, 1), "read mode refu
 var returns = Compile("if (Args.Count > 0) return 1;\nreturn 2;");
 Expect(returns.Succeeded && returns.Warnings.All(warning => warning.Code != "CS0162"), "a snippet that returns compiles without unreachable-code warnings", returns);
 
+// Every type name declared in two default namespaces must have an alias, or a snippet using it does not
+// compile (CS0104): Civil 3D repeats DBObject, Entity, Surface, Section... from AutoCAD.
+var probe = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create("AliasProbe", null,
+  references.Select(path => Microsoft.CodeAnalysis.MetadataReference.CreateFromFile(path)));
+var aliased = new HashSet<string>(ScriptCompiler.DefaultAliases.Select(alias => alias.Split('=')[0].Trim()), StringComparer.Ordinal);
+var declaredIn = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+foreach (var ns in ScriptCompiler.DefaultUsings)
+{
+  Microsoft.CodeAnalysis.INamespaceSymbol? symbol = probe.GlobalNamespace;
+  foreach (var part in ns.Split('.'))
+  {
+    symbol = symbol?.GetNamespaceMembers().FirstOrDefault(member => member.Name == part);
+  }
+
+  foreach (var type in symbol?.GetTypeMembers().Where(t => t.DeclaredAccessibility == Microsoft.CodeAnalysis.Accessibility.Public) ?? Enumerable.Empty<Microsoft.CodeAnalysis.INamedTypeSymbol>())
+  {
+    if (!declaredIn.TryGetValue(type.Name, out var list)) declaredIn[type.Name] = list = new List<string>();
+    if (!list.Contains(ns)) list.Add(ns);
+  }
+}
+
+var unaliased = declaredIn.Where(pair => pair.Value.Count > 1 && !aliased.Contains(pair.Key)).Select(pair => $"{pair.Key} ({string.Join(", ", pair.Value)})").OrderBy(text => text).ToList();
+Expect(unaliased.Count == 0, $"every type name repeated across the default namespaces has an alias{(unaliased.Count == 0 ? string.Empty : ": missing " + string.Join("; ", unaliased))}");
+
+var common = Compile("var o = Open<DBObject>(Db.BlockTableId);\nSection s = null; Table t = null; Group g = null; TransactionManager m = Db.TransactionManager;\nreturn o.Handle.ToString();");
+Expect(common.Succeeded, "DBObject, Section, Table, Group and TransactionManager resolve without qualification", common);
+
 Expect(ScriptCompiler.FindScriptLine("   at Script_X.Run() in script:line 17\n   at Other() in other.cs:line 3") == 17, "stack traces map back to the snippet line");
 
 var unique = Compile("return 1;");
