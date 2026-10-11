@@ -51,6 +51,44 @@ wedged the plugin until Civil 3D restarted (`docs/FINDINGS.md` in
 `Joshua8-AI/civil3d-automation` has the original field report). The fix is
 `fix-no-document-deadlock` / upstream PR #8.
 
+## Command-context wedge without losing undo (`fix/plugin-command-route`, 2026-10-11, live)
+
+Civil 3D 2027 on Joshua8-AI's machine, a copy of an HW drawing (TIN surface EG).
+
+Trigger: with no prompt left open, another process runs a command, and afterwards
+no `ExecuteInCommandContextAsync` callback runs, not even one queued from the main
+thread, while `Application.Idle` keeps firing (373 ticks in 3 s, `CMDACTIVE` 0).
+It is not deterministic. A COM `SendCommand("(princ) ")` from PowerShell did it in
+3 of 3 runs on 2026-10-10 and in 0 of 3 on 2026-10-11; a command run by a COM
+automation tool (civil3d-driver: `REGEN`, `UNDO 1`, an eval) did it within one or
+two commands in three Civil 3D sessions and not at all in two others. None of these
+brought the route back: `WM_NULL` every 250 ms for 10 s, `WM_MOUSEMOVE`, a Shift
+key down/up, another COM command, or switching the active document away and back.
+
+Found along the way: outside a command, a document lock plus a regular
+`Transaction` wipes the drawing's undo history, even when it is only read and
+aborted; an `OpenCloseTransaction` does not. A registered command started with COM
+`SendCommand` from a background thread still runs at once in the wedged state.
+
+Offline: `npm test` 429 passed / 34 files (new `host_route_fallback.test.ts`),
+`docs:check` current, `build-2027.ps1` 0 warnings / 0 errors.
+
+Live on this branch, after a civil3d-driver `REGEN` wedged the hop:
+
+| scenario | result |
+|---|---|
+| before the wedge: `listAlignments`, health | normal route (`hostRoute: commandContext`) |
+| first call after the wedge | answered in 5.3 s (the grace period); `hostRoute: fallback` from then on |
+| `getDrawingInfo`, `listSurfaces`, `listAlignments` | 0.1 s each |
+| `createAlignment` J-5, then J-6 | created through `C3DMCPHOP`, 0.1-0.2 s each |
+| `UNDO 1`, twice | removed J-6, then J-5: the edits are undoable and the Idle reads in between left the undo history alone |
+| a LISP `getstring` prompt left open over COM, then a write | `CIVIL3D.HOST_BUSY` after 15.1 s; the prompt kept waiting, nothing was typed into it |
+| Esc, then the same write; `UNDO 1` | created in 0.2 s; undone |
+
+The same change in the Joshua8-AI fork (`civil3d-2027-support` 34a6b2b) also ran
+`-PLOT` sequences through `C3DMCPHOP` in the fallback (1.2 s, landscape) and kept an
+edit made before the wedge undoable.
+
 ## Deploy-script regression checks
 
 - `install-bundle.ps1` derives `SeriesMin/Max` from the build's target framework

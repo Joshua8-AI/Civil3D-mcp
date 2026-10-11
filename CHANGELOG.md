@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- Once the command-context hop was wedged, the `Application.Idle` fallback
+  ran every request outside a command, which had two side effects: a document
+  lock plus a regular transaction outside a command wipes the drawing's undo
+  history, even for a read, and edits made there were not undoable. The wedge
+  is also easier to reach than it looked: on Civil 3D 2027 it followed
+  ordinary commands sent by other COM clients, with no prompt left open (not
+  every time). In the fallback, reads now use an `OpenCloseTransaction` (the
+  undo history survives), and writes run inside the plugin's own `C3DMCPHOP`
+  command, started over COM only while the editor is quiescent, so they are
+  undoable and never typed into a waiting prompt. `getCivil3DHealth` reports
+  `hostRoute` (`commandContext` or `fallback`).
 - After a command-line prompt was left waiting for input (e.g. an unbalanced
   LISP expression sent over COM) and then cancelled, every later request timed
   out after 120 s until Civil 3D restarted: `ExecuteInCommandContextAsync`
