@@ -32,8 +32,10 @@ public static class RunCodeCommands
 {
   private const int MaxCodeChars = 200_000;
   private const int DefaultTimeoutSeconds = 30;
-  // Below the MCP server's 120 s command timeout, with room for compiling and queueing.
+  // Below an older MCP server's fixed 120 s command timeout, with room for
+  // compiling and queueing (newer servers wait for the start window too).
   private const int MaxTimeoutSeconds = 90;
+  private const int MaxStartWithinSeconds = 300;
   private const int DefaultMaxInlineBytes = 64 * 1024;
   private const int MinInlineBytes = 1024;
   private const int MaxInlineBytes = 1024 * 1024;
@@ -56,14 +58,27 @@ public static class RunCodeCommands
     public volatile bool Committed;
     // Write mode: the client cancelled after the commit.
     public volatile bool CancelledAfterCommit;
-    // Write mode: the script ended the run's transaction itself (an alias of Tr).
+    // Write mode: the script ended the run's transaction itself (not through Tr,
+    // which cannot end it, but for example through TopTransaction).
     public volatile bool TransactionEndedByScript;
     // Write mode: transactions the script left open and the run aborted.
     public int LeakedTransactions;
+    // 0 waiting, 1 started (main thread, just before the script is created),
+    // 2 given up (request thread, cancelled while queued). The first claim
+    // wins, so a script never starts after "cancelled before start" was recorded.
+    private int _start;
+
+    public bool TryStart() => Interlocked.CompareExchange(ref _start, 1, 0) == 0;
+
+    public bool TryAbandon() => Interlocked.CompareExchange(ref _start, 2, 0) == 0;
   }
 
   public static async Task<object?> RunCodeAsync(JsonObject? parameters)
   {
+    // The only command that runs arbitrary code: callers without this
+    // session's token are refused before anything is read or logged.
+    RpcAuth.Require(parameters);
+    var total = Stopwatch.StartNew();
     var code = PluginRuntime.GetRequiredString(parameters, "code");
     if (code.Length > MaxCodeChars)
     {
@@ -81,6 +96,16 @@ public static class RunCodeCommands
     if (timeoutSeconds < 1 || timeoutSeconds > MaxTimeoutSeconds)
     {
       throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"'timeoutSeconds' must be 1 to {MaxTimeoutSeconds}.");
+    }
+
+    // The script starts within this many seconds of the request or not at all
+    // (HOST_BUSY), so it never starts after the server stopped waiting. An
+    // older server sends none and waits a fixed 120 s: keep budget + window
+    // inside that.
+    var startWithinSeconds = PluginRuntime.GetOptionalDouble(parameters, "startWithinSeconds") ?? Math.Max(5, 110 - timeoutSeconds);
+    if (startWithinSeconds < 1 || startWithinSeconds > MaxStartWithinSeconds)
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"'startWithinSeconds' must be 1 to {MaxStartWithinSeconds}.");
     }
 
     var maxInlineBytes = PluginRuntime.GetOptionalInt(parameters, "maxInlineBytes") ?? DefaultMaxInlineBytes;
@@ -106,6 +131,7 @@ public static class RunCodeCommands
       ["startedUtc"] = DateTimeOffset.UtcNow.ToString("O"),
       ["mode"] = mode,
       ["timeoutSeconds"] = timeoutSeconds,
+      ["startWithinSeconds"] = startWithinSeconds,
       ["args"] = args.DeepClone(),
       ["status"] = "started",
     };
@@ -125,7 +151,6 @@ public static class RunCodeCommands
     var warnings = new JsonArray();
     var outcome = new RunOutcome();
     var status = "failed";
-    var total = Stopwatch.StartNew();
     long compileMs = 0;
 
     try
@@ -160,7 +185,8 @@ public static class RunCodeCommands
       var (scriptType, context) = RunCodeAssemblies.LoadScript(runId, compiled.Assembly!, compiled.Pdb!, compiled.TypeName);
       try
       {
-        status = await ExecuteScriptAsync(scriptType, writeMode, args, TimeSpan.FromSeconds(timeoutSeconds), runFolder, outcome, response);
+        status = await ExecuteScriptAsync(scriptType, writeMode, args, TimeSpan.FromSeconds(timeoutSeconds),
+          total, TimeSpan.FromSeconds(startWithinSeconds), runFolder, outcome, response);
         if (outcome.CancelledAfterCommit)
         {
           warnings.Add("The request was cancelled after the change was committed: it is in the drawing (one UNDO removes it).");
@@ -205,6 +231,32 @@ public static class RunCodeCommands
 
       return response;
     }
+    catch (JsonRpcDispatchException exception) when (outcome.Script == null)
+    {
+      // The script never started (start window passed, Civil 3D busy with a
+      // command or dialog, no drawing, no compiler): the client gets the
+      // error, summary.json records why.
+      if (exception.Code == "CIVIL3D.HOST_BUSY")
+      {
+        status = "busy";
+      }
+
+      summary["reason"] = exception.Message;
+      throw;
+    }
+    catch (OperationCanceledException)
+    {
+      // Only the request's cancellation gets here (a started script ends in
+      // ExecuteScriptAsync's catch), nearly always while the run waited for
+      // Civil 3D; TryAbandon makes sure it then never starts.
+      status = "cancelled";
+      if (outcome.TryAbandon())
+      {
+        summary["reason"] = "cancelled before start: the request was cancelled (the MCP client disconnected or gave up waiting) while it waited for Civil 3D; nothing ran.";
+      }
+
+      throw;
+    }
     finally
     {
       response["status"] = status;
@@ -226,18 +278,21 @@ public static class RunCodeCommands
       }
 
       response["logFolder"] = runFolder;
+      // "unknown" when the script ended the run's transaction itself and the
+      // run did not commit: its changes may or may not be in the drawing.
+      var committed = outcome.TransactionEndedByScript && !outcome.Committed
+        ? JsonValue.Create("unknown")
+        : JsonValue.Create(outcome.Committed);
       if (writeMode)
       {
-        response["committed"] = outcome.Committed;
+        response["committed"] = committed?.DeepClone();
       }
 
       summary["status"] = status;
       summary["drawing"] = outcome.Drawing;
       summary["finishedUtc"] = DateTimeOffset.UtcNow.ToString("O");
       summary["timing"] = response["timing"]!.DeepClone();
-      summary["committed"] = outcome.TransactionEndedByScript && !outcome.Committed
-        ? JsonValue.Create("unknown")
-        : JsonValue.Create(outcome.Committed);
+      summary["committed"] = committed;
       if (outcome.Script != null && !outcome.ActionDone && !outcome.Committed)
       {
         summary["note"] = "The request ended while the script was still running; a write is rolled back when it returns.";
@@ -260,15 +315,33 @@ public static class RunCodeCommands
   // committed), write mode inside C3DMCPHOP. Write mode commits here rather
   // than in CivilExecution (write: false, inCommand: true keeps C3DMCPHOP and
   // its regular transaction), so the commit comes after the last checks and
-  // outcome.Committed records what really happened.
+  // outcome.Committed records what really happened. The script starts within
+  // startWithin of the request (received) or not at all.
   private static async Task<string> ExecuteScriptAsync(Type scriptType, bool writeMode, JsonObject args, TimeSpan budget,
-    string runFolder, RunOutcome outcome, JsonObject response)
+    Stopwatch received, TimeSpan startWithin, string runFolder, RunOutcome outcome, JsonObject response)
   {
     var token = PluginRuntime.GetCurrentRequestCancellationToken();
     try
     {
       await CivilExecution.ExecuteAsync((doc, civilDoc, database, transaction) =>
       {
+        // Past the window the server may have stopped waiting, and an agent
+        // told "timed out" could retry while this run still goes ahead. The
+        // transaction ExecuteAsync opened is rolled back unused.
+        if (received.Elapsed > startWithin)
+        {
+          throw new JsonRpcDispatchException(
+            "CIVIL3D.HOST_BUSY",
+            $"The script waited {received.Elapsed.TotalSeconds:0} s for other Civil 3D work and was not started; nothing changed. Retry when Civil 3D is idle.");
+        }
+
+        // The request thread gave up first (cancelled while this was queued)
+        // and recorded that nothing ran.
+        if (!outcome.TryStart())
+        {
+          throw new RunCodeCancelledException("The request was cancelled before the script started.");
+        }
+
         var script = (RunCodeScript)Activator.CreateInstance(scriptType)!;
         outcome.Script = script;
         outcome.Drawing = doc.Name;
@@ -309,7 +382,7 @@ public static class RunCodeCommands
 
             if (!RestoreRunTransaction(database, transaction, outcome))
             {
-              throw new InvalidOperationException("The script committed, aborted or disposed the run's transaction itself (Tr under another name); its changes may or may not be in the drawing. Return instead of ending Tr.");
+              throw new InvalidOperationException("The script committed, aborted or disposed the run's transaction itself (for example through Db.TransactionManager.TopTransaction); its changes may or may not be in the drawing. Return instead of ending it.");
             }
 
             transaction.Commit();
@@ -373,10 +446,15 @@ public static class RunCodeCommands
   // Main thread, write mode. Aborts transactions the script started and left
   // open on the drawing, newest first, until the run's own transaction is on
   // top again (Commit only works on the top transaction). Returns false when
-  // the run's transaction is no longer active: the script committed, aborted
-  // or disposed it under another name.
+  // the run's transaction is no longer active: the script ended it some other
+  // way than through Tr (a RunTransaction), for example via TopTransaction.
   private static bool RestoreRunTransaction(Database database, Transaction run, RunOutcome outcome)
   {
+    // Ended through the run's own object (a script can only reach it by
+    // reflection now): Commit and Abort leave AutoDelete false, Dispose zeroes
+    // the pointer. Its old address may belong to a newer transaction by now,
+    // so it is never compared.
+    var ended = run.UnmanagedObject == IntPtr.Zero || !run.AutoDelete;
     var manager = database.TransactionManager;
     for (var guard = 0; guard < 100; guard++)
     {
@@ -387,7 +465,7 @@ public static class RunCodeCommands
         return false;
       }
 
-      if (run.UnmanagedObject != IntPtr.Zero && top.UnmanagedObject == run.UnmanagedObject)
+      if (!ended && top.UnmanagedObject == run.UnmanagedObject)
       {
         return true;
       }

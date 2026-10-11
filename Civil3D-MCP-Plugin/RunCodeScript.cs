@@ -58,6 +58,8 @@ public abstract class RunCodeScript
   /// it throws or runs out of time. Only changes made through Tr (and transactions
   /// nested in it) are rolled back: database and system variables, files and
   /// Session are not. Open-close transactions are refused in write mode.
+  /// The run owns it: Commit() and Abort() throw, and Dispose() does nothing
+  /// (RunTransaction).
   /// </summary>
   public Transaction Tr { get; private set; } = null!;
 
@@ -104,13 +106,13 @@ public abstract class RunCodeScript
     Db = db;
     Ed = doc.Editor;
     Civil = civil;
-    Tr = transaction;
+    Tr = new RunTransaction(transaction);
     WriteMode = writeMode;
     Args = args;
     Token = token;
     RunFolder = runFolder;
     _budget = budget;
-    _transactions[db] = transaction;
+    _transactions[db] = Tr;
     _savedWorkingDatabase = HostApplicationServices.WorkingDatabase;
     _clock = Stopwatch.StartNew();
   }
@@ -121,13 +123,10 @@ public abstract class RunCodeScript
     var text = value?.ToString();
     lock (_outputLock)
     {
-      if (_output.Length >= MaxOutputChars)
+      if (RunCodeOutput.AppendLine(_output, text, MaxOutputChars))
       {
         OutputTruncated = true;
-        return;
       }
-
-      _output.Append(text).Append('\n');
     }
   }
 
@@ -226,8 +225,9 @@ public abstract class RunCodeScript
 
     _owned.Add(side);
     var transaction = side.TransactionManager.StartOpenCloseTransaction();
+    // The real one is disposed by ReleaseOwned; the script only gets the wrapper.
     _owned.Add(transaction);
-    _transactions[side] = transaction;
+    _transactions[side] = new RunTransaction(transaction);
     return side;
   }
 
@@ -274,6 +274,57 @@ public abstract class RunCodeScript
 
     _owned.Clear();
     _transactions.Clear();
+  }
+}
+
+/// <summary>
+/// Tr and TransactionFor(...) as the script sees them. Every call goes to the
+/// run's transaction, but Commit() and Abort() throw and Dispose() does
+/// nothing, so an alias (var tx = Tr; tx.Commit(); or using var tx = Tr;) can
+/// neither end it early nor leave a freed transaction that the next call would
+/// dereference (a Civil 3D crash). The run alone commits, aborts and disposes
+/// the real one. Members not overridden here (GetAllObjects, the RXObject
+/// members) work on the same native transaction, exactly as on the real object;
+/// OpenCloseTransaction does not override them either.
+/// </summary>
+internal sealed class RunTransaction : Transaction
+{
+  private readonly Transaction _run;
+
+  // autoDelete false: this wrapper never ends or frees the native transaction.
+  internal RunTransaction(Transaction run) : base(run.UnmanagedObject, false)
+  {
+    _run = run;
+  }
+
+  // A wrapper kept past its run (in Session, or by a task still running)
+  // must not reach the disposed transaction: that is a native crash.
+  private Transaction Run => _run.IsDisposed
+    ? throw new InvalidOperationException("This transaction belongs to a run that has ended; use the current run's Tr.")
+    : _run;
+
+  public override DBObject GetObject(ObjectId id, OpenMode mode) => Run.GetObject(id, mode);
+
+  public override DBObject GetObject(ObjectId id, OpenMode mode, bool openErased) => Run.GetObject(id, mode, openErased);
+
+  public override DBObject GetObject(ObjectId id, OpenMode mode, bool openErased, bool forceOpenOnLockedLayer) =>
+    Run.GetObject(id, mode, openErased, forceOpenOnLockedLayer);
+
+  public override void AddNewlyCreatedDBObject(DBObject obj, bool add) => Run.AddNewlyCreatedDBObject(obj, add);
+
+  public override int NumberOfOpenedObjects => Run.NumberOfOpenedObjects;
+
+  public override Autodesk.AutoCAD.DatabaseServices.TransactionManager TransactionManager => Run.TransactionManager;
+
+  public override void Commit() =>
+    throw new InvalidOperationException("The run owns Tr (and TransactionFor's transactions): write mode commits Tr when the script returns; remove Commit().");
+
+  public override void Abort() =>
+    throw new InvalidOperationException("The run owns Tr (and TransactionFor's transactions): throw an exception to roll back; remove Abort().");
+
+  protected override void Dispose(bool disposing)
+  {
+    // Nothing to do: the run disposes the real transaction.
   }
 }
 

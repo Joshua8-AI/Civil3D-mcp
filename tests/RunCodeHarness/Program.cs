@@ -261,6 +261,7 @@ var unique = Compile("return 1;");
 var again = Compile("return 1;");
 Expect(unique.Succeeded && again.Succeeded && unique.TypeName != again.TypeName, "each run gets its own class and assembly name");
 
+RuntimeChecks.Run((condition, name) => Expect(condition, name));
 Console.WriteLine(failures == 0 ? $"PASS ({references.Count} references)" : $"{failures} FAILED");
 return failures == 0 ? 0 : 1;
 
