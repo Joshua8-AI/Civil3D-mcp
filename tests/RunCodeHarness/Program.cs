@@ -114,6 +114,20 @@ const string forWrite = "foreach (var e in ModelSpace<Entity>()) { var w = Tr.Ge
 var readWrite = Compile(forWrite);
 Expect(HasError(readWrite, ScriptCompiler.GuardDiagnosticId, 1), "read mode refuses OpenMode.ForWrite", readWrite);
 Expect(Compile(forWrite, write: true).Succeeded, "write mode allows OpenMode.ForWrite");
+Expect(readWrite.Errors.Count(error => error.Code == ScriptCompiler.GuardDiagnosticId) == 1, "OpenMode.ForWrite is reported once", readWrite);
+
+foreach (var (label, snippet) in new[] {
+  ("(OpenMode)1", "var o = Tr.GetObject(Db.BlockTableId, (OpenMode)1);\nreturn null;"),
+  ("((OpenMode)2)", "var o = Tr.GetObject(Db.BlockTableId, ((OpenMode)2));\nreturn null;"),
+  ("OpenMode.ForRead + 1", "var o = Tr.GetObject(Db.BlockTableId, OpenMode.ForRead + 1);\nreturn null;") })
+{
+  var r = Compile(snippet);
+  Expect(HasError(r, ScriptCompiler.GuardDiagnosticId, 1) && r.Errors.Count == 1, $"read mode refuses the OpenMode constant {label} (once)", r);
+}
+
+Expect(Compile("var a = Tr.GetObject(Db.BlockTableId, (OpenMode)0);\nvar b = Tr.GetObject(Db.BlockTableId, OpenMode.ForRead);\nvar c = Tr.GetObject(Db.BlockTableId, 0);\nreturn a == b && b == c;").Succeeded,
+  "read mode allows ForRead given as (OpenMode)0, OpenMode.ForRead or 0");
+Expect(Compile("var o = Tr.GetObject(Db.BlockTableId, (OpenMode)1);\nreturn null;", write: true).Succeeded, "write mode allows (OpenMode)1");
 
 var upgrade = Compile("var e = Open<Entity>(ObjectId.Null);\ne.UpgradeOpen();\ne.Erase();");
 Expect(HasError(upgrade, ScriptCompiler.GuardDiagnosticId, 2), "read mode refuses UpgradeOpen/Erase", upgrade);
@@ -125,6 +139,29 @@ Expect(Compile("using var t = Db.TransactionManager.StartOpenCloseTransaction();
 var databaseSetter = Compile("Db.Ltscale = 2;");
 Expect(HasError(databaseSetter, ScriptCompiler.GuardDiagnosticId, 1), "read mode refuses setting a Database property", databaseSetter);
 Expect(Compile("Db.Ltscale = 2;", write: true).Succeeded, "write mode allows setting a Database property");
+
+foreach (var (label, snippet) in new[] {
+  ("Db.Ltscale++", "Db.Ltscale++;"), ("++Db.Ltscale", "++Db.Ltscale;"), ("Db.Pdmode--", "Db.Pdmode--;"), ("--Db.Pdmode", "--Db.Pdmode;"),
+  ("a compound assignment", "Db.Ltscale += 1;"),
+  ("a deconstruction", "(Db.Ltscale, Db.Textsize) = (2.0, 3.0);"),
+  ("a nested deconstruction", "double x, y; (x, (Db.Ltscale, y)) = (1.0, (2.0, 3.0));"),
+  ("a parenthesized target", "(Db.Ltscale) = 2;"), ("a parenthesized ++", "(Db.Ltscale)++;"), ("Db.Ltscale!++", "Db.Ltscale!++;") })
+{
+  var r = Compile(snippet);
+  Expect(HasError(r, ScriptCompiler.GuardDiagnosticId, 1), $"read mode refuses {label} on a Database property", r);
+}
+
+var propertyReads = Compile("""
+  var n = 0; n++;
+  var pl = new Polyline(); pl.Elevation++;
+  var t = (Db.Ltscale, 1); var s = Db.Ltscale!;
+  double a, b; (a, b) = (Db.Ltscale, Db.Textsize);
+  var m = Math.Max(Db.Ltscale, -Db.Textsize);
+  foreach (var (u, v) in new[] { (Db.Ltscale, 1.0) }) { }
+  return n + a + m;
+  """);
+Expect(propertyReads.Succeeded, "read mode allows ++ on locals and in-memory entities, and reading a property into a tuple, an argument or a foreach", propertyReads);
+Expect(Compile("Db.Ltscale++;", write: true).Succeeded, "write mode allows Db.Ltscale++");
 
 var memoryEntity = Compile("var pl = new Polyline();\npl.AddVertexAt(0, new Point2d(0, 0), 0, 0, 0);\npl.Closed = true;\nreturn pl.Area;");
 Expect(memoryEntity.Succeeded, "read mode allows building an entity in memory", memoryEntity);
@@ -140,6 +177,24 @@ Expect(HasError(prompt, ScriptCompiler.GuardDiagnosticId, 1), "both modes refuse
 
 var dialog = Compile("Application.ShowAlertDialog(\"hi\");", write: true);
 Expect(HasError(dialog, ScriptCompiler.GuardDiagnosticId, 1), "both modes refuse modal dialogs", dialog);
+
+foreach (var (label, snippet) in new[] {
+  ("Form.ShowDialog", "new System.Windows.Forms.Form().ShowDialog();"),
+  ("Window.ShowDialog", "new System.Windows.Window().ShowDialog();"),
+  ("a WinForms OpenFileDialog", "new System.Windows.Forms.OpenFileDialog().ShowDialog();"),
+  ("a WPF OpenFileDialog", "new Microsoft.Win32.OpenFileDialog().ShowDialog();"),
+  ("an AutoCAD OpenFileDialog", "new Autodesk.AutoCAD.Windows.OpenFileDialog(\"t\", null, \"dwg\", \"x\", Autodesk.AutoCAD.Windows.OpenFileDialog.OpenFileDialogFlags.NoUrls).ShowDialog();"),
+  ("TaskDialog", "System.Windows.Forms.TaskDialog.ShowDialog(new System.Windows.Forms.TaskDialogPage());"),
+  ("WinForms Application.Run", "System.Windows.Forms.Application.Run(new System.Windows.Forms.Form());"),
+  ("Dispatcher.PushFrame", "System.Windows.Threading.Dispatcher.PushFrame(new System.Windows.Threading.DispatcherFrame());"),
+  ("Dispatcher.Run", "System.Windows.Threading.Dispatcher.Run();"),
+  ("InputBox", "Microsoft.VisualBasic.Interaction.InputBox(\"x\");"),
+  ("MsgBox", "Microsoft.VisualBasic.Interaction.MsgBox(\"x\");"),
+  ("Editor.DoPrompt", "Ed.DoPrompt(new PromptPointOptions(\"p\"));") })
+{
+  var r = Compile(snippet, write: true);
+  Expect(HasError(r, ScriptCompiler.GuardDiagnosticId, 1), $"both modes refuse {label}", r);
+}
 
 var subscribe = Compile("Db.ObjectModified += (s, e) => { };", write: true);
 Expect(HasError(subscribe, ScriptCompiler.GuardDiagnosticId, 1), "both modes refuse event subscriptions", subscribe);
