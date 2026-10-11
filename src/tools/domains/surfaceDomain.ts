@@ -17,6 +17,38 @@ const Point2DOr3DSchema = z.union([Point3DSchema, Point2DSchema]);
 
 const GenericSurfaceResponseSchema = z.object({}).passthrough();
 
+/** Hard cap the plugin enforces for getSurfaceTinVertices (keeps responses near 6 MB). */
+export const TIN_VERTICES_MAX_POINTS = 100_000;
+export const TIN_VERTICES_DEFAULT_MAX_POINTS = 50_000;
+
+export const SurfaceTinVerticesArgsSchema = z.object({
+  action: z.literal("get_tin_vertices"),
+  name: z.string().min(1),
+  boundary: z.array(Point2DSchema).min(3).optional()
+    .describe("Optional plan polygon in drawing coordinates; only vertices inside it are returned."),
+  maxPoints: z.number().int().min(1).max(TIN_VERTICES_MAX_POINTS).optional()
+    .describe(`Vertex cap (default ${TIN_VERTICES_DEFAULT_MAX_POINTS}, max ${TIN_VERTICES_MAX_POINTS}). Over the cap the plugin decimates deterministically (XY-sorted stride) and sets truncated.`),
+});
+
+export const SurfaceTinVerticesResponseSchema = z.object({
+  surfaceName: z.string(),
+  surfaceHandle: z.string().optional(),
+  surfaceType: z.enum(["TIN", "Grid"]),
+  vertexSource: z.string().optional(),
+  vertices: z.array(Point3DSchema),
+  totalVertexCount: z.number().int(),
+  returnedVertexCount: z.number().int(),
+  surfaceVertexCount: z.number().int().optional(),
+  truncated: z.boolean(),
+  maxPoints: z.number().int(),
+  decimation: z.enum(["none", "stride"]),
+  decimationStride: z.number().optional(),
+  boundaryApplied: z.boolean(),
+  coordinateDecimals: z.number().int().optional(),
+  units: z.string().optional(),
+  lengthUnit: z.string().nullable().optional(),
+}).passthrough();
+
 const SurfaceSummarySchema = z.object({
   name: z.string(),
   handle: z.string(),
@@ -206,6 +238,7 @@ const canonicalSurfaceInputShape = {
     "volume_calculate",
     "volume_report",
     "volume_by_region",
+    "volume_to_datum",
     "analyze_slope",
     "analyze_elevation",
     "analyze_directions",
@@ -213,6 +246,7 @@ const canonicalSurfaceInputShape = {
     "contour_interval_set",
     "statistics_get",
     "sample_elevations",
+    "get_tin_vertices",
     "create_from_dem",
     "comparison_workflow",
     "drainage_workflow",
@@ -234,6 +268,7 @@ const canonicalSurfaceInputShape = {
   method: z.enum(["tin_volume", "average_end_area", "prismoidal"]).optional(),
   format: z.enum(["summary", "detailed"]).optional(),
   boundary: z.array(Point2DSchema).optional(),
+  datum: z.number().optional(),
   ranges: z.array(z.object({ min: z.number(), max: z.number() })).optional(),
   numRanges: z.number().int().optional(),
   depthThreshold: z.number().positive().optional(),
@@ -243,6 +278,7 @@ const canonicalSurfaceInputShape = {
   endPoint: Point2DSchema.optional(),
   numSamples: z.number().int().min(2).optional(),
   filePath: z.string().optional(),
+  maxPoints: z.number().int().min(1).max(TIN_VERTICES_MAX_POINTS).optional(),
   coordinateSystem: z.string().optional(),
   stepDistance: z.number().positive().optional(),
   maxSteps: z.number().int().positive().optional(),
@@ -347,6 +383,13 @@ const SurfaceVolumeByRegionArgsSchema = z.object({
   action: z.literal("volume_by_region"),
   baseSurface: z.string(),
   comparisonSurface: z.string(),
+  boundary: z.array(Point2DSchema).min(3),
+});
+
+const SurfaceVolumeToDatumArgsSchema = z.object({
+  action: z.literal("volume_to_datum"),
+  name: z.string(),
+  datum: z.number(),
   boundary: z.array(Point2DSchema).min(3),
 });
 
@@ -665,6 +708,22 @@ export const SURFACE_DOMAIN_DEFINITION: DomainToolDefinition = {
         }),
       ),
     },
+    volume_to_datum: {
+      action: "volume_to_datum",
+      inputSchema: SurfaceVolumeToDatumArgsSchema,
+      responseSchema: GenericSurfaceResponseSchema,
+      capabilities: ["query", "analyze"],
+      requiresActiveDrawing: true,
+      safeForRetry: true,
+      pluginMethods: ["calculateSurfaceVolumeToDatum"],
+      execute: async (args) => await withApplicationConnection(
+        async (appClient) => await appClient.sendCommand("calculateSurfaceVolumeToDatum", {
+          name: args.name,
+          datum: args.datum,
+          boundary: args.boundary,
+        }),
+      ),
+    },
     analyze_slope: {
       action: "analyze_slope",
       inputSchema: SurfaceAnalyzeSlopeArgsSchema,
@@ -755,6 +814,22 @@ export const SURFACE_DOMAIN_DEFINITION: DomainToolDefinition = {
       execute: async (args) => await withApplicationConnection(
         async (appClient) => await appClient.sendCommand("getSurfaceStatisticsDetailed", {
           name: args.name,
+        }),
+      ),
+    },
+    get_tin_vertices: {
+      action: "get_tin_vertices",
+      inputSchema: SurfaceTinVerticesArgsSchema,
+      responseSchema: SurfaceTinVerticesResponseSchema,
+      capabilities: ["query", "inspect"],
+      requiresActiveDrawing: true,
+      safeForRetry: true,
+      pluginMethods: ["getSurfaceTinVertices"],
+      execute: async (args) => await withApplicationConnection(
+        async (appClient) => await appClient.sendCommand("getSurfaceTinVertices", {
+          name: args.name,
+          ...(args.boundary ? { boundary: args.boundary } : {}),
+          maxPoints: args.maxPoints ?? TIN_VERTICES_DEFAULT_MAX_POINTS,
         }),
       ),
     },
@@ -941,6 +1016,7 @@ export const SURFACE_DOMAIN_DEFINITION: DomainToolDefinition = {
         "volume_calculate",
         "volume_report",
         "volume_by_region",
+        "volume_to_datum",
         "analyze_slope",
         "analyze_elevation",
         "analyze_directions",
@@ -948,6 +1024,7 @@ export const SURFACE_DOMAIN_DEFINITION: DomainToolDefinition = {
         "contour_interval_set",
         "statistics_get",
         "sample_elevations",
+        "get_tin_vertices",
         "create_from_dem",
         "comparison_workflow",
         "drainage_workflow",

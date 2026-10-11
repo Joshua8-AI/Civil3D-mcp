@@ -40,7 +40,8 @@ describe("host routes", () => {
     expect(execution).toMatch(/if \(needsCommand\)\s*\{\s*await StartPluginCommandAsync\(/);
   });
 
-  it("runs writes inside the plugin's own command", () => {
+  it("runs writes, command sequences and lock-only work inside the plugin's own command", () => {
+    expect(execution.match(/needsCommand: true, needsQuietEditor: false/g)?.length).toBe(2);
     expect(execution).toContain('Civil3DCompatibility.InvokeComMethod(acadDocument, "SendCommand"');
     const entry = source("PluginEntry.cs");
     expect(entry).toContain("[CommandMethod(CivilExecution.PluginCommandName");
@@ -82,9 +83,11 @@ describe("host routes", () => {
         if (bad.length > 0) offenders.push(`${name} ${kind}: ${bad.join(", ")}`);
       }
       const sendString = code.match(/SendStringToExecute\(/g)?.length ?? 0;
-      if (sendString > 0) offenders.push(`${name}: SendStringToExecute`);
+      // PlotCommands cancels a stuck -PLOT from inside its own command with ESC ESC.
+      if (sendString > (name === "PlotCommands.cs" ? 1 : 0)) offenders.push(`${name}: SendStringToExecute`);
     }
     expect(offenders).toEqual([]);
-    expect(counts.ReadInCommandAsync).toBeGreaterThan(0);
+    expect(counts.ReadInCommandAsync).toBe(11);
+    expect(counts.ReadThenCommandLineAsync).toBe(6);
   });
 });

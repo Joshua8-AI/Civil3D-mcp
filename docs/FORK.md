@@ -17,8 +17,9 @@ Sacred-G/Civil3D-mcp          the original project (Civil 3D 2026)            re
 | `fork/*` | The same fixes based on Joshua8-AI `civil3d-2027-support`: the pull requests to the 2027 fork. These are what `civil3d-2027` merges. |
 | `main` | Kept equal to Sacred-G `main` (a plain mirror; no fork-only commits). |
 
-Current fixes: `qc-triangles` (#10 / #1), `civil3d-2027-api-paths` (#11 / #2),
-`catalog-list-and-alignment-from-polyline` (#12 / #3), `coordinate-system-set` (#13 / #4).
+Fixes so far: `qc-triangles` (#10 / #1), `civil3d-2027-api-paths` (#11 / #2),
+`catalog-list-and-alignment-from-polyline` (#12 / #3), `coordinate-system-set` (#13 / #4). Joshua8-AI has all four (2026-09-29); only the Sacred-G pull requests are still open. Last sync with
+`origin/civil3d-2027-support`: 2026-10-11 (46 commits, merge resolved toward Joshua8-AI's versions).
 Fork only (not sent upstream yet): `fix/command-context-wedge` (Idle-hop fallback when
 `ExecuteInCommandContextAsync` stops running callbacks, `CIVIL3D.HOST_BUSY` while a command is active).
 

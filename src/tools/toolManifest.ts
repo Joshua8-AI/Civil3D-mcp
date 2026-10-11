@@ -19,6 +19,7 @@ import { GRADING_DOMAIN_DEFINITION } from "./domains/gradingDomain.js";
 import { PARCEL_DOMAIN_DEFINITION } from "./domains/parcelDomain.js";
 import { SURVEY_DOMAIN_DEFINITION } from "./domains/surveyDomain.js";
 import { PLAN_PRODUCTION_DOMAIN_DEFINITION } from "./domains/planProductionDomain.js";
+import { PLOT_DOMAIN_DEFINITION } from "./domains/plotDomain.js";
 import { PROJECT_DOMAIN_DEFINITION } from "./domains/projectDomain.js";
 import { STANDARDS_DOMAIN_DEFINITION } from "./domains/standardsDomain.js";
 import { QC_DOMAIN_DEFINITION } from "./domains/qcDomain.js";
@@ -37,6 +38,8 @@ import { JOB_DOMAIN_DEFINITION } from "./domains/jobDomain.js";
 import { PLUGIN_DOMAIN_DEFINITION } from "./domains/pluginDomain.js";
 import { DOCS_DOMAIN_DEFINITION } from "./domains/docsDomain.js";
 import { WORKFLOW_DOMAIN_DEFINITION } from "./domains/workflowDomain.js";
+import { XREF_DOMAIN_DEFINITION } from "./domains/xrefDomain.js";
+import { COMPARE_DOMAIN_DEFINITION } from "./domains/compareDomain.js";
 import type { ToolCatalogEntry } from "./toolMetadata.js";
 
 export const MIGRATED_DOMAIN_DEFINITIONS = [
@@ -52,6 +55,7 @@ export const MIGRATED_DOMAIN_DEFINITIONS = [
   PARCEL_DOMAIN_DEFINITION,
   SURVEY_DOMAIN_DEFINITION,
   PLAN_PRODUCTION_DOMAIN_DEFINITION,
+  PLOT_DOMAIN_DEFINITION,
   PROJECT_DOMAIN_DEFINITION,
   STANDARDS_DOMAIN_DEFINITION,
   QC_DOMAIN_DEFINITION,
@@ -70,6 +74,8 @@ export const MIGRATED_DOMAIN_DEFINITIONS = [
   WORKFLOW_DOMAIN_DEFINITION,
   PLUGIN_DOMAIN_DEFINITION,
   DOCS_DOMAIN_DEFINITION,
+  XREF_DOMAIN_DEFINITION,
+  COMPARE_DOMAIN_DEFINITION,
 ];
 
 export const GENERATED_TOOL_CATALOG_ENTRIES: ToolCatalogEntry[] = MIGRATED_DOMAIN_DEFINITIONS.flatMap(

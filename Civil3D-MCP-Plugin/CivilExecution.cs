@@ -95,6 +95,54 @@ public static class CivilExecution
     });
   }
 
+  // Same host gate, command context, drawing-identity check, and document
+  // lock as ExecuteAsync, but WITHOUT an enclosing transaction. Some database
+  // operations (xref reload/unload/bind/detach) manage their own internal
+  // transactions and must not run nested inside an open top transaction; the
+  // callback opens short transactions of its own where it needs to read.
+  public static async Task<T> ExecuteLockedWithoutTransactionAsync<T>(Func<Document, CivilDocument, Database, T> action)
+  {
+    return await ExecuteSerializedAsync(async cancellationToken =>
+    {
+      if (App.DocumentManager.MdiActiveDocument == null)
+      {
+        throw new JsonRpcDispatchException("CIVIL3D.NO_DRAWING", "No active drawing is open in Civil 3D.");
+      }
+
+      T? result = default;
+      Exception? capturedException = null;
+      var expectedDrawingIdentity = PluginRuntime.GetExpectedDrawingIdentity();
+
+      var hostTask = RunOnHostAsync(_ =>
+      {
+        try
+        {
+          cancellationToken.ThrowIfCancellationRequested();
+          var doc = RequireExpectedDocument(expectedDrawingIdentity, "No drawing changes were made.");
+          var civilDoc = CivilApplication.ActiveDocument ?? throw new JsonRpcDispatchException("CIVIL3D.NO_DRAWING", "No active Civil 3D document is available.");
+
+          using var documentLock = doc.LockDocument();
+          result = action(doc, civilDoc, doc.Database);
+        }
+        catch (Exception ex)
+        {
+          capturedException = ex;
+        }
+
+        return Task.CompletedTask;
+      }, needsCommand: true, needsQuietEditor: false, cancellationToken);
+
+      await AwaitHostContextAsync(hostTask, cancellationToken);
+
+      if (capturedException != null)
+      {
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(capturedException).Throw();
+      }
+
+      return result!;
+    });
+  }
+
   public static async Task<T> ExecuteInCommandContextAsync<T>(Func<Task<T>> action)
   {
     return await ExecuteSerializedAsync(async cancellationToken =>
@@ -122,6 +170,54 @@ public static class CivilExecution
       // closed between the check and the hop, the command-context callback
       // would never run and the request would hang holding the gate.
       var hostTask = ExecuteInApplicationContextAsync(callback, cancellationToken);
+
+      await AwaitHostContextAsync(hostTask, cancellationToken);
+
+      if (capturedException != null)
+      {
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(capturedException).Throw();
+      }
+
+      return result!;
+    });
+  }
+
+  // Runs an async action that drives AutoCAD commands (Editor.CommandAsync)
+  // for the active document, serialized behind the same host gate as every
+  // other drawing operation. Unlike ExecuteAsync it deliberately opens no
+  // transaction and takes no explicit document lock around the action: a
+  // command such as -PLOT or -PUBLISH must own the document itself, and
+  // holding an open transaction across it is what makes the .NET-only paths
+  // unsafe (see PlotCommands.cs). Callers open short, disposed read
+  // transactions of their own before issuing commands.
+  public static async Task<T> ExecuteCommandSequenceAsync<T>(Func<Document, CancellationToken, Task<T>> action)
+  {
+    return await ExecuteSerializedAsync(async cancellationToken =>
+    {
+      // Same zero-document fast fail as ExecuteAsync: the command-context hop
+      // below never fires without a document and would wedge the gate.
+      if (App.DocumentManager.MdiActiveDocument == null)
+      {
+        throw new JsonRpcDispatchException("CIVIL3D.NO_DRAWING", "No active drawing is open in Civil 3D.");
+      }
+
+      T? result = default;
+      Exception? capturedException = null;
+      var expectedDrawingIdentity = PluginRuntime.GetExpectedDrawingIdentity();
+
+      var hostTask = RunOnHostAsync(async _ =>
+      {
+        try
+        {
+          cancellationToken.ThrowIfCancellationRequested();
+          var doc = RequireExpectedDocument(expectedDrawingIdentity, "No commands were run.");
+          result = await action(doc, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+          capturedException = ex;
+        }
+      }, needsCommand: true, needsQuietEditor: false, cancellationToken);
 
       await AwaitHostContextAsync(hostTask, cancellationToken);
 
@@ -331,8 +427,8 @@ public static class CivilExecution
           await RunOnce(HostRoute.Idle);
         }
 
-        // Async work in C3DMCPHOP may still be running after SendCommand
-        // returned; wait for the operation, then send any
+        // Work in C3DMCPHOP may still be awaiting commands (-PLOT) after
+        // SendCommand returned; wait for the operation, then send any
         // command-line input it queued.
         await operationDone.Task;
         if (PendingCommandLine.Count > 0 && acadDocument != null)

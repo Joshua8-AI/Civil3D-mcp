@@ -4,44 +4,100 @@
 
 ### Fixed
 
-- The command-context hop itself is gone. Diagnosed live on Civil 3D 2027: in a
-  disconnected Windows session (RDP closed, nobody at the keyboard), the first
-  COM `SendCommand` from any client stops
-  `DocumentManager.ExecuteInCommandContextAsync` from running callbacks for the
-  rest of the session. Any client means PowerShell, another add-in, or this
-  plugin. It also happened with only this plugin loaded, and nothing revives
-  it. In a connected session the same commands are harmless, which made the
-  hang look random. The plugin no longer uses that route:
+- Every plugin call hung until Civil 3D restarted once any COM client had run
+  a command with `SendCommand`. Verified on 2027 with only this plugin loaded:
+  in a disconnected Windows session the first such command (from PowerShell,
+  another add-in, or the plugin itself) stops
+  `DocumentManager.ExecuteInCommandContextAsync` from running callbacks for
+  the rest of the session, and nothing revives it. The plugin no longer uses
+  that route:
   - plain reads run from an `Application.Idle` tick with an
-    `OpenCloseTransaction`, so they add no undo steps and keep the undo
-    history (a regular transaction under a document lock outside a command
-    wipes it);
-  - writes, and reads that create scratch objects (volume surfaces) or use the
-    pickfirst selection, run inside the plugin's own `C3DMCPHOP` command. It is
-    started through COM `SendCommand` only while the editor is quiescent, is
-    flagged `UsePickSet` and `Redraw`, and each write is one undoable step;
+    `OpenCloseTransaction`, so they add no undo steps and leave the undo
+    history alone (a regular transaction under a document lock outside a
+    command wipes it);
+  - writes, xref changes, command sequences (plot, publish) and reads that
+    create scratch objects (volume surfaces) or use the pickfirst selection run
+    inside the plugin's own `C3DMCPHOP` command, started through COM
+    `SendCommand` only while the editor is quiescent; each write is one
+    undoable step, and the command keeps the user's pickfirst selection;
   - command-line input (undo, redo, Storm and Sanitary, data-shortcut
     commands) is sent through COM `SendCommand` after the operation instead of
-    `SendStringToExecute`, whose queued input mixed with the plugin command's
-    (`UNDO` received "C3DMCPHOP" as its count);
-  - `redoDrawing` sends `MREDO n` (`REDO` takes no count), and undo and redo
-    run without a document lock, which empties the redo stack.
-  The busy and modal-dialog checks below stay: a command, prompt or dialog that
-  holds Civil 3D for 15 s fails with `CIVIL3D.HOST_BUSY`, and plugin calls no
-  longer cancel a command or prompt the user has open.
-- After a command-line prompt was left waiting for input (e.g. an unbalanced
-  LISP expression sent over COM) and then cancelled, every later request timed
-  out after 120 s until Civil 3D restarted: `ExecuteInCommandContextAsync`
-  never ran callbacks queued after the stuck one. Requests now run exactly
-  once through the command-context hop or an `Application.Idle` fallback that
-  takes over when the hop has not started after 5 s of idle time (logged, and
-  kept until restart); while a command or prompt stays active for 15 s they
-  fail with `CIVIL3D.HOST_BUSY` instead of timing out.
-- While a modal dialog was open (e.g. the Drawing Recovery notice at startup)
-  requests still timed out after 120 s: Civil 3D raises no `Application.Idle`
-  inside a modal loop, so neither hop nor the watcher could run. A watchdog on
-  the timer thread now fails the request with `CIVIL3D.HOST_BUSY` after 15 s
-  without an Idle tick.
+    `SendStringToExecute`, whose queued input got mixed into the plugin
+    command's input (`UNDO` received "C3DMCPHOP" as its count).
+  A command, prompt or modal dialog that holds Civil 3D for 15 s now fails the
+  request with `CIVIL3D.HOST_BUSY` (watcher from jorgegarcias60/Civil3D-mcp#1
+  and #2) instead of a 120 s timeout, and plugin calls no longer cancel a
+  command or prompt the user has open.
+- `redoDrawing` sent `REDO n`; `REDO` takes no count, so the count reached the
+  command line as an unknown command. It now sends `MREDO n`, and undo and
+  redo run without a document lock (a plugin read under a lock empties the
+  redo stack).
+- `getSelectedCivilObjectsInfo` and `getProjectContext` read the pickfirst
+  selection inside `C3DMCPHOP`, which is flagged `UsePickSet` and `Redraw`:
+  outside such a command `Editor.SelectImplied` returns an error, and the
+  selection and its grips stay in place afterwards.
+- Style lookups by name never matched on Civil 3D 2027, so a requested style
+  was silently replaced by the drawing's first one: `create_layout` with style
+  "Design Profile" got "Existing Ground Profile", and `view_create` with style
+  "Profile View" warned the style was missing. Civil 3D 2027's `StyleBase`
+  declares a set-only `Name` that hides the readable base-class `Name`, so the
+  reflective name read returned null for every style, label set and band set.
+  Names are now read through the documented `DBObject.Name`, and the
+  reflection boundary resolves a readable (or writable) declaration when a
+  derived class hides one. A style, label set or band set name that does not
+  exist is now `CIVIL3D.INVALID_INPUT` listing the available names instead of
+  a silent substitution. No name still means the drawing's first one, except
+  the section view band set and group plot style lookups, which pass Civil
+  3D's default (a null id), and the profile view band set lookup, which uses
+  the first band set only where the caller asks for it (`view_create` does).
+  `create_layout` / `create_from_surface` now report the style and layer
+  applied. Affects every `LookupUtils` style lookup (alignment, profile,
+  surface, alignment/profile label set, profile view style and band set,
+  parcel style, parcel area label style, section view style and band set,
+  group plot style) and the name reads in the label and pipe-network style
+  lookups.
+- `civil3d_plot` plot/publish: with a PDF device set to "open in viewer when
+  done", the viewer opened the hidden `.<name>.<guid>.mcp-tmp.pdf` the plotter
+  had been pointed at, which had already been renamed to the final name ("file
+  not found"). The plotter now writes the requested path itself. The output
+  directory chain stays locked during the plot; a link or junction at the
+  final name is refused; with `overwrite` an existing PDF is moved to a backup
+  and restored if the plot fails; after the plot the output must be a regular
+  file with one hard link (a link planted during the plot is removed and the
+  call fails) before it is verified.
+- `civil3d_profile view_create` always failed on Civil 3D 2027 ("ProfileView.Create
+  returned null"): the plugin probed `ProfileView.Create` by reflection with
+  argument orders that do not exist. It now calls the typed
+  `Create(alignmentId, insertPosition, name, bandSetId, styleId)` overload,
+  falling back to the drawing's first profile view style and band set when none
+  is named. When the drawing has only one of the two, the view is created with
+  Civil 3D's defaults, the one that exists is applied to it, and a warning
+  names the one that was missing; a named style or band set that cannot be
+  applied, or a view that cannot be given the requested name, fails with
+  `CIVIL3D.INVALID_INPUT` and nothing is created. New optional `layer`; the
+  result reports name, handle, layer, style and band set.
+- The profile view band-set lookup read `ProfileViewBandSetStyles` from the
+  label-set styles root, where it does not exist, so it always returned a null
+  id (`view_band_set` imported nothing). It now reads `Styles.ProfileViewBandSetStyles`.
+- A requested layer that did not exist was silently replaced by the current
+  layer (e.g. `create_layout layer:"C-ROAD-DES"` landed on layer 0). Missing
+  layers are now created; an invalid layer name is `CIVIL3D.INVALID_INPUT`.
+  Applies to every create path that takes `layer` (profiles, alignments,
+  offset alignments, polylines, text, lines, profile views).
+- `civil3d_profile check_k_values` computed K with A as a decimal grade
+  difference (0.028) instead of percent (2.8) — a 280 ft curve reported
+  K ≈ 9,980 — and always used a metric table, so 50 (mph) required sag 9 /
+  crest 4. K is now L / (100·|g2−g1|), checked against the AASHTO
+  stopping-sight-distance design K tables in mph (ft/%) or km/h (m/%). New
+  optional `speedUnits` (`mph` | `km/h`) defaults from the drawing's length
+  unit; speeds between rows use the next higher row (and say so); speeds
+  outside the table are `CIVIL3D.INVALID_INPUT`. Per curve it now returns
+  grades in percent, A in percent, K, required K, start/end and PVI station.
+  A profile with no vertical curves reports `allPass: false` with a warning,
+  since nothing was checked.
+- `civil3d_profile get` reported symmetric parabolas as `asymmetric_parabola`
+  ("parabolasymmetric" contains "asymmetric"); they are now
+  `symmetric_parabola`. The response schema still accepts the old `parabola`.
 - With no document open, drawing-dependent requests hung and wedged the
   plugin's execution gate; they now fail fast with `CIVIL3D.NO_DRAWING`, and
   `civil3d_drawing new` works from zero documents.
@@ -53,6 +109,92 @@
   Windows clone with `core.autocrlf=true`; comparisons now ignore CRLF/LF.
 
 ### Added
+
+- Read-only geometry for the Civil 3D-Revit bridge. None of these is
+  approval-gated (`query`/`inspect`, `safeForRetry`):
+  - `getSurfaceTinVertices` (`civil3d_surface get_tin_vertices`): the vertices
+    of a TIN surface's visible triangles (or a grid surface's visible points),
+    optionally clipped to a plan polygon. Over `maxPoints` (default 50,000,
+    hard cap 100,000) they are decimated deterministically: sorted by X then Y,
+    with an even stride. Coordinates are rounded to 6 decimals to keep the
+    largest response near 6 MB. TIN volume surfaces are rejected clearly.
+  - `getParcelGeometry` (`civil3d_parcel get_geometry`): real parcel boundary
+    from the typed curve API (base curve, then `GetGeCurve`, then `Explode`)
+    with line/arc segments, bulges, a densified polygon, perimeter and area
+    computed including arcs. `reportParcels` still uses its reflection path.
+  - `getDrawingUnits` (`civil3d_drawing units`): raw INSUNITS and its name, a
+    `lengthUnit` that keeps `USSurveyFeet` distinct from `Feet`, metres per
+    unit, the Civil 3D drawing unit settings (Feet/Meters and the
+    imperial-to-metric foot), angular units, and a consistency warning when
+    INSUNITS and Civil 3D disagree.
+  - `getPipeNetwork`/`getPipe` pipes gain `startPoint`, `endPoint`,
+    `startInvert`, `endInvert`, `startCrown`, `endCrown`, `innerDiameter`,
+    `outerDiameter`, `innerHeight`, `outerHeight`, `wallThickness`,
+    `crossSectionalShape` and `length2d` (additive; inverts are centreline
+    minus inner height / 2, as in `civil3d_compare`).
+  - `getDrawingInfo` and `getCoordinateSystemInfo` gain an additive
+    `lengthUnit`; `linearUnits` keeps its old values.
+  - Host-independent `BridgeMath.cs` (arcs, bulge areas, chaining,
+    point-in-polygon, stride decimation, unit resolution) with an offline
+    harness, `npm run test:bridge-math`. Live verification is pending (see
+    TESTING.md).
+- `civil3d_plot` domain tool (plugin `PlotCommands.cs`): `list_layouts`,
+  `list_page_setups`, `list_plotters` (read-only, never approval-gated) and
+  `plot_layouts_to_pdf` / `publish_sheet_set` (approval-gated `export`). Plots
+  drive `-PLOT` / `-PUBLISH` with `BACKGROUNDPLOT=0` instead of the PlotEngine,
+  which live testing found crash-prone from a command context; every answer is
+  validated up front, output goes through `FileBoundary` (export roots, `.pdf`,
+  directory chain locked while the plotter writes, `overwrite` defaults to
+  false), and success is only reported for a non-empty PDF written by the run.
+  Both output actions can run as `civil3d_job` operations
+  (`plot_layouts_to_pdf`, `publish_sheet_set`) via `asJob: true`. Live
+  verification against Civil 3D 2027 is pending (see TESTING.md).
+  `plot_layouts_to_pdf` takes `plotArea` (`layout`, the default for
+  paper-space layouts; `extents`; or `window` with `windowCorners`) and plots
+  the Model tab when `layoutNames` names it (extents or a window, fit to the
+  paper and centred). Page orientation comes from the paper's own shape as
+  well as the layout rotation, so a layout on a landscape medium such as
+  ARCH D (36 x 24) at rotation 0 plots landscape.
+- `CivilExecution.ExecuteCommandSequenceAsync` for host work that issues
+  AutoCAD commands; it keeps the zero-document `CIVIL3D.NO_DRAWING` fast fail
+  and the drawing-identity check but opens no transaction around the command.
+- `civil3d_xref` domain: `list` reports each xref's saved and found paths,
+  status (`loaded`, `unloaded`, `unreferenced`, `not_found`, `unresolved`,
+  `orphaned`), attach or overlay, nesting and parents, and instance count.
+  `attach`, `overlay`, `detach`, `reload`, `unload`, `bind` (`bind`/`insert`)
+  and `repath` (`absolute`/`relative`) change xrefs and need approval. Every
+  caller path goes through `FileBoundary` (import roots, `.dwg` only, must
+  exist). Reload, unload, bind, and detach run under the document lock with no
+  enclosing transaction, through the new
+  `CivilExecution.ExecuteLockedWithoutTransactionAsync`.
+- `civil3d_project data_shortcut_references` (read-only) lists the
+  data-shortcut references in the current drawing with source drawing, source
+  object name/type/handle, where the source is relative to the working folder
+  and current project, and `current`/`out_of_date`/`broken`/`source_missing`/`unknown`
+  status, all from `Entity.GetReferenceInfo()` and the `IsReference*` flags.
+  `data_shortcut_repair` (needs approval) repoints a reference to a new source
+  drawing through `DataShortcuts.RepairBrokenDRef`, resolved at runtime from
+  `AeccDataShortcutMgd.dll` through `Civil3DCompatibility`, so the build needs
+  no seventh reference.
+- `civil3d_compare` domain, which never modifies a drawing. `drawing` compares
+  the active drawing with another DWG that it reads as a side database with
+  `ReadDwgFile`, never opening it as a document. `snapshot` writes a JSON
+  fingerprint to the export roots; it is gated as an export and does not
+  overwrite by default. `compare_snapshot` diffs against a snapshot. Results
+  group added/removed/modified entities by type and layer and add Civil 3D
+  object diffs: alignment length and geometry hash, profile PVIs, surface
+  statistics, pipe counts and inverts. The host-independent diff
+  (`DrawingFingerprint.cs`) has an offline harness,
+  `npm run test:compare-diff`.
+
+### Changed
+
+- `data_shortcut_sync` sends `_AeccSynchronizeReferences`, the command name
+  found in the Civil 3D 2027 CUIx and `AeccUiBase.arx`, where it used to send
+  `SynchronizeReferences`. `data_shortcut_list` fills `sourceFilePath` from
+  `GetReferenceInfo()`.
+- `data_shortcut_promote` now finds the reference, preselects it, and queues
+  `_AeccPromoteReference`, where it used to only return manual steps.
 
 - Civil 3D 2027 build path: `scripts/gather-refs-2027.ps1` stages the six
   managed references (spread across three folders in a 2027 install) and

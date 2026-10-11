@@ -44,6 +44,8 @@ public static class CoordinateSystemCommands
         ["datum"] = datum,
         ["projection"] = projection,
         ["linearUnits"] = CivilObjectUtils.LinearUnits(database),
+        // Additive: distinguishes USSurveyFeet from Feet (linearUnits does not).
+        ["lengthUnit"] = DrawingCommands.ResolveLengthUnit(civilDoc, database),
         ["centralMeridian"] = null,
         ["falseEasting"] = null,
         ["falseNorthing"] = null,
@@ -90,16 +92,43 @@ public static class CoordinateSystemCommands
           $"Civil 3D did not apply coordinate system '{knownCode}' (the drawing still reports '{appliedCode}').");
       }
 
-      var coordinateSystem = SettingsUnitZone.GetCoordinateSystemByCode(appliedCode);
+      // The code is applied and confirmed above. The library lookup for its
+      // details can fail or return null on some installations (see
+      // DrawingCommands.ReadCoordinateSystemCode), so it only fills the
+      // descriptive fields and never fails a change that already happened.
+      string? description = null, zone = null, datum = null, projection = null, unit = null;
+      var warnings = new List<string>();
+      try
+      {
+        var coordinateSystem = SettingsUnitZone.GetCoordinateSystemByCode(appliedCode);
+        if (coordinateSystem != null)
+        {
+          description = coordinateSystem.Description;
+          zone = coordinateSystem.Category;
+          datum = coordinateSystem.Datum;
+          projection = coordinateSystem.Projection;
+          unit = coordinateSystem.Unit;
+        }
+        else
+        {
+          warnings.Add($"Coordinate system '{appliedCode}' was applied, but its details could not be read from the coordinate system library.");
+        }
+      }
+      catch (System.Exception ex) when (ex is not JsonRpcDispatchException)
+      {
+        warnings.Add($"Coordinate system '{appliedCode}' was applied, but its details could not be read from the coordinate system library: {ex.Message}");
+      }
+
       return new Dictionary<string, object?>
       {
         ["code"] = appliedCode,
         ["previousCode"] = string.IsNullOrWhiteSpace(previousCode) ? null : previousCode,
-        ["description"] = coordinateSystem.Description,
-        ["zone"] = coordinateSystem.Category,
-        ["datum"] = coordinateSystem.Datum,
-        ["projection"] = coordinateSystem.Projection,
-        ["unit"] = coordinateSystem.Unit,
+        ["description"] = description,
+        ["zone"] = zone,
+        ["datum"] = datum,
+        ["projection"] = projection,
+        ["unit"] = unit,
+        ["warnings"] = warnings,
       };
     });
   }

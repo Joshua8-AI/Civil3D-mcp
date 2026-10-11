@@ -111,6 +111,432 @@ further runs in both session states:
 - two drawings and zero drawings;
 - a 200-request soak (median 0.12 s).
 
+### Live on Civil 3D 2027 — 2026-09-26 (plot, xref, compare, bridge reads)
+
+Plugin from `civil3d-2027-support` at `35b5600`, installed with
+`build-2027.ps1 -Install`. Calls went straight to the plugin on 8757 through
+the repo's own `build/utils/ConnectionManager.js` (the approval gate lives in
+the Node server and is covered offline). Drawings: copies of the 2027 Civil
+Tutorials `Pipe Networks-1A.dwg` (meters, NH83; 2 TIN surfaces, 56 parcels),
+`Pipe Networks-3.dwg` (feet; 1 gravity network, 11 pipes / 12 structures) and
+`Plan Production-Plan Profile Sheets-Create.dwg` (2 layouts, 6 page setups),
+placed under Documents (the default file root).
+
+| scenario | result |
+|---|---|
+| `npm run test:live-plugin`, zero documents | health OK; `CIVIL3D.NO_DRAWING` in 6 ms |
+| `getDrawingUnits` (meters drawing / feet drawing) | `Meters` / `Feet`, `unitsConsistent: true` |
+| `getSurfaceTinVertices` EG (23,092 vertices) | full set in 163 ms (1.07 MB); `maxPoints: 5` → even stride, `truncated: true` |
+| `getParcelGeometry` rectangular lot / lot with an arc | `computedArea` = `area` to 0.001 m²; `geometrySource: baseCurve:Polyline` |
+| `getParcelGeometry` road ROW (parcel with holes) | outer loop only: 77,140 vs 20,913 m², flagged in `notes` — **known gap** |
+| `getPipeNetwork` Pipe Networks-3 | **was failing** (`Retrieve attribute failed` on network style / parts list); fixed in `35b5600`: 11 pipes + 12 structures in 131 ms, `style`/`partsList` null, all new pipe fields filled, inverts match `civil3d_compare` |
+| `plotListLayouts` / `plotListPageSetups` / `plotListPlotters` | 2 layouts / 6 setups / 19 devices (2.4 s for the device list) |
+| `plotLayoutsToPdf` Letter layout on DWG To PDF.pc3 | refused up front with a `paperSize` hint (no stuck `-PLOT`) |
+| `plotLayoutsToPdf` `allLayouts` + `paperSize: "ANSI A (11.00 x 8.50 Inches)"` | 2 PDFs in 1.6 s; Layout2 content checked visually |
+| `plotPublishSheetSet` right after plotting | `CIVIL3D.CONFLICT` (plotting marks the drawing modified) |
+| `plotPublishSheetSet` `requireSaved: false`, `keepDsd: true` | 2-sheet PDF in 3.1 s; generated DSD accepted by 2027 `-PUBLISH` |
+| `listXrefs` / `overlayXref` (relative) / `unloadXrefs` / `detachXrefs` | correct statuses and stored `.\Parcel-1A.dwg` |
+| `reloadXrefs`, `bindXrefs` | **were hanging to the 120 s timeout** (work done, control never returned); fixed in `7a7fac9` via `-XREF`: reload 80 ms, repath 95 ms, bind (insert) 209 ms |
+| `writeDrawingSnapshot` / `compareDrawingSnapshot` | 28 KB fingerprint in 124 ms / diff in 336 ms |
+| `compareDrawings` against a DWG open in another tab | side database read, 376 ms |
+| `listDataShortcutReferences` | empty list, working folder reported |
+
+Not exercised live: `data_shortcut_repair` / `promote` / `sync` (the tutorial
+drawings have no data-shortcut references), `asJob` plotting, overwrite and
+path-boundary refusals, zero-document plot calls, grid/volume surfaces for
+`getSurfaceTinVertices`, US-survey-foot drawings for `getDrawingUnits`.
+
+Autodesk's own AutoCAD MCP (`AutoCAD-MCP-Server-2027.bundle`, not ours):
+its `MCPHTTPSTART` command exists only when `ACMCP_TOOLS_CONFIG_FILE` points at
+a config with `EnableHttpServer: true`, and then fails with
+`FileNotFoundException: ModelContextProtocol.AspNetCore 0.4.0.0` — the 2027
+bundle does not ship its HTTP host, so it cannot be registered as an external
+MCP server.
+
+### Live checklist: `civil3d_plot` (feature/plot-publish)
+
+Offline only so far: plugin compiles against 2027 refs, vitest covers schemas,
+approval classification, routing and job registration, and the FileBoundary
+harness covers the directory lock used while the plotter writes (2026-09-26 on
+the branch: `npm test` 437 passed / 34 files, `docs:check` current at 207
+entries, `build-2027.ps1` 0 warnings / 0 errors). Live results from
+2026-09-26 are in the table above; rows still marked pending were not run:
+
+| scenario | how | last result |
+|---|---|---|
+| Discovery | `civil3d_plot` `list_layouts`, `list_page_setups`, `list_plotters` (with and without `device: "DWG To PDF.pc3"`) | passed 2026-09-26 |
+| Zero documents | close all drawings, call `list_layouts` and `plot_layouts_to_pdf` | pending (expect `CIVIL3D.NO_DRAWING` fast) |
+| Plot one layout | approval, then `plot_layouts_to_pdf` with `layoutNames: [..]`, `outputPath` under Documents | pending |
+| Plot all layouts | `allLayouts: true`, `outputDirectory`; check per-layout bytes/pageCount, CTAB and BACKGROUNDPLOT restored | passed 2026-09-26 (2 layouts, 1.6 s) |
+| Page setup / paper override | `pageSetup`, then `paperSize` + `plotStyleTable: "monochrome.ctb"` | pending |
+| Overwrite guard | repeat without `overwrite` (expect `CIVIL3D.CONFLICT`), then with `overwrite: true` | pending |
+| Path boundary | `outputDirectory` outside export roots (expect `CIVIL3D.PATH_NOT_ALLOWED`, nothing plotted) | pending |
+| Prompt-chain drift | a layout whose paper is not on DWG To PDF.pc3 (expect up-front `INVALID_INPUT`, no stuck `-PLOT`) | passed 2026-09-26 |
+| Publish multi-sheet | save drawing, `publish_sheet_set` with 2+ layouts; confirm page count and order; `keepDsd: true` to inspect the DSD | passed 2026-09-26 (2 sheets, DSD accepted by 2027) |
+| Publish unsaved guard | modify drawing, `publish_sheet_set` (expect `CIVIL3D.CONFLICT`) | passed 2026-09-26 (plotting itself marks the drawing modified) |
+| As job | `asJob: true`, poll `civil3d_job status`, cancel mid-batch | pending |
+## Xrefs, data-shortcut references, drawing comparison (2026-09-26, `feature/xref-datashortcut-compare`)
+
+Offline, on the branch:
+
+| check | command | result |
+|---|---|---|
+| Node unit tests (adds `xref_domain`, `data_shortcut_references`, `compare_domain`) | `npm test` | 440 passed / 36 files |
+| Generated tool reference current | `npm run docs:check` | current (208 entries) |
+| Version files in sync | `npm run version:check` | agree on 1.2.1 |
+| Plugin compiles (2027 refs) | `.\scripts\build-2027.ps1` (no `-Install`) | 0 warnings, 0 errors |
+| Fingerprint diff harness | `npm run test:compare-diff` | passed |
+| P1/P2/P4 harness still green | `npm run test:p2-boundaries` | passed |
+| Startup smoke | `npm run test:startup` | 210 registered tools |
+
+**Partly verified live on 2026-09-26** (see the live table above: list,
+overlay, unload, reload, repath, bind, detach, compare, snapshot). Still to
+run with the plugin loaded and `CIVIL3D_IMPORT_ROOTS` /
+`CIVIL3D_EXPORT_ROOTS` covering the test folders:
+
+- `civil3d_xref list` on a drawing with one attached, one overlaid, one
+  unloaded, one missing (renamed source), and one nested xref whose parent
+  is unloaded. Expect `loaded`, `unloaded`, `not_found`, and `orphaned`,
+  with correct `savedPath` and `foundPath`. Check the parent resolution by
+  native pointer (`GraphNode.In()` returns an untyped wrapper).
+- `attach` and `overlay` with `pathType: relative` on a saved host, then
+  `unload`, `reload`, `repath` to a copied file, `bind` with `insert`, and
+  `detach`, each through `civil3d_request_approval`. Confirm that the
+  no-transaction path (`ExecuteLockedWithoutTransactionAsync`) does not raise
+  `eInvalidOpenState` and does not wedge the host gate.
+- `civil3d_project data_shortcut_references` on a drawing with current, stale
+  (edit and save the source), and broken (rename the source) references.
+  Then `data_shortcut_repair` to the renamed source. Check that
+  `AeccDataShortcutMgd` resolves (it is loaded on the host thread), that
+  `workingFolder` and `currentProjectFolder` are filled, and that `repaired`
+  is true.
+- `data_shortcut_promote`: check whether `_AeccPromoteReference` honours the
+  pickfirst set or prompts for the object. The command name comes from the
+  CUIx, but its prompt sequence has not been verified. Check
+  `data_shortcut_sync` with `_AeccSynchronizeReferences`.
+- `civil3d_compare drawing` against the drawing's own `.bak` or a previous
+  submittal copy, including one that is currently open in another document
+  (this uses the `OpenTryForReadShare` fallback). Then `snapshot` followed by
+  `compare_snapshot` on an unchanged drawing: expect `identical: true`. Time a
+  large drawing, because the whole comparison runs on the host thread under
+  the gate.
+
+## Bridge-support reads (2026-09-26, `feature/bridge-support-commands`)
+
+`getSurfaceTinVertices`, `getParcelGeometry`, `getDrawingUnits`, and the new
+pipe fields on `getPipeNetwork`. Offline, on the branch:
+
+| check | command | result |
+|---|---|---|
+| Node unit tests (adds `bridge_support_commands`) | `npm test` | 467 passed / 38 files |
+| Generated tool reference current | `npm run docs:check` | current (209 entries) |
+| Version files in sync | `npm run version:check` | agree on 1.2.1 |
+| Plugin compiles (2027 refs) | `.\scripts\build-2027.ps1` (no `-Install`) | 0 warnings, 0 errors |
+| Arc, area, chaining, decimation and unit math | `npm run test:bridge-math` | passed |
+| Other harnesses still green | `npm run test:compare-diff`, `npm run test:p2-boundaries` | passed |
+| Startup smoke | `npm run test:startup` | 211 registered tools |
+
+The Civil 3D API members used were checked against the 2027 reference
+assemblies (metadata only): `TinSurface.GetTriangles(bool)`,
+`TinSurfaceTriangle.Vertex1..3.Location`, `GridSurface.GetVertices(bool)`,
+`Parcel.BaseCurve`/`GetGeCurve`/`Explode`, `Pipe.InnerHeight`/`OuterDiameterOrWidth`,
+`SettingsUnitZone.DrawingUnits`/`ImperialToMetricConversion`.
+
+**Mostly verified live on 2026-09-26** (see the live table above, and the
+bridge end-to-end run in civil3d-automation `bridge/TESTING.md`). Still open:
+
+- `getSurfaceTinVertices` on a TIN surface with an outer boundary: check that
+  `totalVertexCount` excludes points outside the boundary, that a `boundary`
+  polygon clips, and that `maxPoints: 100000` on a surface with more vertices
+  returns `truncated: true`, the same subset on a second call, and a response
+  under 8 MiB. Time it on a surface with over 1 million vertices (it walks
+  every visible triangle on the host thread). Try a grid surface (DEM) and a
+  TIN volume surface (expect `CIVIL3D.INVALID_INPUT`).
+- `getParcelGeometry` on a rectangular lot, a lot with a curved frontage, and
+  a parcel with a curve on its back line. Record `geometrySource`: whether
+  `Parcel.BaseCurve` works or the `GetGeCurve`/`Explode` fallbacks are needed.
+  `computedArea` should match `area` (a note appears when they differ by more
+  than 0.1%). Check the sign of the bulges against the drawing, and check a
+  parcel with an interior hole: only the outer loop is expected.
+- `getDrawingUnits` on drawings with INSUNITS = Feet (2), USSurveyFeet (21),
+  Meters (6) and Undefined (0), and on a Feet drawing whose Civil 3D
+  Drawing Settings use the US survey foot (expect `unitsConsistent: false`
+  and a warning).
+- `getPipeNetwork`: compare `startPoint`/`endPoint` with the pipe's grips and
+  `startInvert`/`endInvert` with the inverts shown in Pipe Properties,
+  including an elliptical or box pipe (`innerHeight` differs from
+  `innerDiameter`).
+- Bridge end to end: `bridge_status` should report the three commands as
+  `available`; `bridge_create_toposolid sampling: "tin"` and the pipe and
+  parcel tools should use the new data.
+
+## cubic review fixes ported from upstream PRs #17-#19 (2026-09-26, offline only)
+
+Ported from the review-fix commits on `upstream/plot-publish`,
+`upstream/xref-datashortcut-compare` and `upstream/bridge-support-reads`.
+None of these have been re-run live.
+
+- **Plot/publish (#17):** the plotter and `-PUBLISH` write to a hidden,
+  unpredictable temp name in the locked output folder; it is checked to be a
+  regular file and renamed over the final name (`FileBoundary.BeginExternalWrite`),
+  so a link planted at the final name after validation cannot redirect output,
+  and a failed plot no longer deletes an existing PDF. `RunCommandAsync` refuses
+  to start a command while one it drove earlier is still at a prompt (the queued
+  Ctrl-C only runs after the host work returns). `publish_sheet_set` skips (with
+  a warning) or rejects never-initialized layouts. Whitespace-only `pageSetup`,
+  `paperSize`, `plotStyleTable` and `device` are rejected by the schema.
+- **Data shortcuts / compare (#18):** unreadable reference health is `unknown`,
+  not `current`; repair/promote prefer a reference over a same-named local object;
+  `view_frame_group` reaches `data_shortcut_repair`; `civil.truncated`; malformed
+  snapshots are `INVALID_INPUT`; block attributes and TIN/grid triangle count and
+  areas are in the fingerprint.
+- **Bridge reads (#19):** inner height falls back to `InnerDiameterOrWidth` only
+  for circular pipes (otherwise null heights/inverts); the units/info reads return
+  the raw coordinate-system code without a library lookup. The same defensive
+  inner-height read was applied to the `civil3d_compare` pipe-network fingerprint,
+  where a throwing `InnerHeight` dropped the whole network.
+
+| check | result |
+|---|---|
+| `npm run build` | ok |
+| `npm test` | 472 passed / 38 files |
+| `npm run docs:check` | current (209 entries) |
+| `npm run version:check` | agree on 1.2.1 |
+| `npm run test:startup` | 211 tools |
+| `test:p2-boundaries`, `test:compare-diff`, `test:bridge-math` | passed |
+| `.\scripts\build-2027.ps1` (no `-Install`) | 0 warnings, 0 errors |
+
+Live checks still to do: plot and publish to a fresh and an existing PDF
+(temp file renamed, no `.mcp-tmp.pdf` left behind); publish with a
+never-opened layout; `civil3d_compare` on a network with a non-circular pipe.
+
+## Profile view, layer and K-value fixes (2026-09-28, offline only)
+
+Three bugs found live on Civil 3D 2027: `civil3d_profile view_create` always
+failed (reflection probed `ProfileView.Create` overloads that do not exist; now
+the typed 2027 overload, with first-style/band-set fallback and a new `layer`);
+a missing requested layer silently became the current layer (now created, all
+10 `GetLayerId` callers are inside `CivilExecution.WriteAsync`); and
+`check_k_values` used A as a decimal and a metric-only table (now
+K = L / (100·|g2−g1|) against AASHTO SSD tables in mph or km/h, `speedUnits`
+defaulting from the drawing units). `get` also reported symmetric parabolas as
+asymmetric; fixed. The band-set lookup, which always returned a null id, was
+fixed along the way.
+
+| check | result |
+|---|---|
+| `npm run build` | ok |
+| `npm test` | 480 passed / 39 files (new `tests/profile_domain.test.ts`, 8 tests) |
+| `npm run docs:check` | current (209 entries) |
+| `npm run version:check` | agree on 1.2.1 |
+| `npm run test:startup` | 211 tools |
+| `npm run test:vertical-curve-math` (new harness) | passed |
+| `test:p2-boundaries`, `test:compare-diff`, `test:bridge-math` | passed |
+| `.\scripts\build-2027.ps1` (no `-Install`) | 0 warnings, 0 errors |
+
+**Live verification pending** (needs the new DLL installed, so Civil 3D must be
+closed first):
+- `view_create` with no style/band set, with named ones, with an unknown style
+  (now `CIVIL3D.INVALID_INPUT`, see below), and with `layer` set to a new
+  layer; check name, handle, layer and style in the result and in the drawing.
+- `create_layout layer:"C-ROAD-DES"` on a drawing without that layer: the layer
+  is created and the profile is on it; an invalid name (e.g. `A<B`) is rejected.
+- `check_k_values` on the 280 ft, −1.4 % → +1.4 % sag: K = 100, required 96 at
+  50 mph (feet drawing, default mph); 52 mph uses the 55 mph row with a note;
+  25 mph is rejected; `speedUnits:"km/h"` on the feet drawing converts lengths.
+- `get` on a profile with an `add_curve` symmetric parabola reports
+  `symmetric_parabola`.
+- `view_band_set` now imports the named band set (it previously got a null id).
+
+## Style lookups and plot-to-final-path (2026-09-28, offline only)
+
+Two more bugs found live on Civil 3D 2027. Style names: `create_layout` style
+"Design Profile" produced an "Existing Ground Profile" profile and
+`view_create` style "Profile View" warned the style was missing. Every style
+name read as null on 2027 (StyleBase's set-only `Name` hides the readable base
+`Name`), so no named lookup matched and each fell back to the first style. Now
+names are read through `DBObject.Name`, the reflection boundary resolves the
+readable declaration, and an unknown name is `CIVIL3D.INVALID_INPUT` listing
+the available names. Plot: the "open in viewer when done" option opened the
+hidden temp name the plotter had been given; the plotter now writes the final
+path (see `FileBoundary.BeginExternalWrite` for the link protections and the
+backup/restore on failure).
+
+| check | result |
+|---|---|
+| `npm run build` | ok |
+| `npm test` | 480 passed / 39 files |
+| `npm run docs:check` | current (209 entries) |
+| `npm run version:check` | agree on 1.2.1 |
+| `npm run test:startup` | 211 tools |
+| `npm run test:style-lookups` (new harness) | 28 checks passed |
+| `npm run test:p2-boundaries` (external-write checks rewritten: fresh, overwrite, failed/partial/rejected output restores the old file, planted hard link, junction, symbolic link) | passed |
+| `test:compare-diff`, `test:bridge-math`, `test:vertical-curve-math` | passed |
+| `.\scripts\build-2027.ps1` (no `-Install`) | 0 warnings, 0 errors |
+
+**Live verification pending** (needs the new DLL installed):
+- `create_layout` / `create_from_surface` with style "Design Profile": the
+  result's `style` and the drawing both say "Design Profile"; a misspelled
+  style is `CIVIL3D.INVALID_INPUT` listing the styles.
+- `view_create` style "Profile View": no warning, the view uses that style.
+- `plot_layouts_to_pdf` and `publish_sheet_set` with "open in viewer when done"
+  on: the viewer opens the real PDF. Repeat with `overwrite: true` over an
+  existing PDF (replaced, no `.*.mcp-bak` left behind) and with the existing
+  PDF held open by a viewer that locks it (clear `FILE_IO_ERROR`, old PDF kept).
+
+## Volume to datum, plot area / Model tab / orientation, alignment radii (2026-10-10, live)
+
+Upstream: #22 (`volume_to_datum`), #17 (three commits added), and per-PI `radii`
+(built on jorgegarcias60's #12; not submitted). Offline on this branch: `npm test`
+492 passed / 41 files, `docs:check` current (209 entries), `version:check` 1.2.1,
+`build-2027.ps1` 0 warnings / 0 errors.
+
+Live on Civil 3D 2027 with this build, against a copy of the HW 03 drawing (feet;
+TIN surface EG, 1,688 points, two hide boundaries; five ARCH D 36 x 24 layouts):
+
+| scenario | result |
+|---|---|
+| `calculateSurfaceVolumeToDatum` EG, 200 x 200 ft square, datum 740 / 760 / 790 | fill 939,719 / 139,719 / 0, cut 0 / 0 / 1,060,281 ft^3; a 1 ft sampled integral of `FindElevationAtXY` agrees within 0.4 ft^3 |
+| same, self-crossing boundary | `CIVIL3D.INVALID_INPUT` (Civil 3D throws `ArgumentException`) |
+| `plotLayoutsToPdf` default area, ARCH D 36 x 24 at rotation 0 | 36 x 24 landscape page (was 24 x 36 portrait, cut off, before the orientation fix) |
+| same, ARCH D 24 x 36 at rotation 90 | 36 x 24 landscape page; `list_layouts` reports both as landscape |
+| `plotArea` `extents`, `window` [0,0,18,12] | plotted; the window page shows the lower-left quarter of the sheet |
+| Model, ANSI B, `extents` / `window` | whole drawing / the window, fit and centred |
+| layout + Model in one batch | 2 PDFs |
+| Model with `plotArea: "layout"`; `window` without corners | `CIVIL3D.INVALID_INPUT`, nothing plotted |
+| `createAlignment` radii [300, null] / [300, 200] / [300] / curveRadius 250 | curves R300 / R300 + R200 / R300 / R250 at both PIs, read back from the alignment entities |
+| radii with curveRadius; radii [0]; radius too big for its tangents | `INVALID_INPUT`; `INVALID_INPUT`; reported in `curveFailures`, the PI stays sharp |
+
+The hang seen during this run (every call stuck after the civil3d-driver used
+the command line) is fixed below.
+
+## Command-context wedge: cause and fallback route (2026-10-10, live)
+
+Cause, reproduced on Civil 3D 2027 with the plugin alone: after Civil 3D
+started and a drawing was open, one COM `SendCommand("(princ) ")` from another
+process (PowerShell) was enough in 3 of 3 runs that day (but see 2026-10-11
+below: it is not deterministic). From then on no `ExecuteInCommandContextAsync`
+callback ran, not even one queued from the main thread, and every plugin call
+hung holding the host gate until Civil 3D restarted. Meanwhile
+`Application.Idle` kept firing (373 ticks in 3 s) and `CMDACTIVE` was 0. None of
+these brought the route back: `WM_NULL` every 250 ms for 10 s, `WM_MOUSEMOVE`,
+a Shift key down/up, another COM command, or switching the active document
+away and back. jorgegarcias60/Civil3D-mcp#1 hit the same state after a LISP
+prompt left open over COM.
+
+Fix on `fix/command-context-wedge`: the Idle watcher from jorgegarcias60#1/#2,
+reads from the Idle tick with an `OpenCloseTransaction`, and writes and command
+sequences inside the plugin's `C3DMCPHOP` command, started over COM. Offline:
+`npm test` 496 passed / 42 files (new `host_route_fallback.test.ts`),
+`docs:check` current, `build-2027.ps1` 0 warnings / 0 errors.
+
+Live, on a copy of the HW 03 drawing:
+
+| scenario | result |
+|---|---|
+| before the wedge: read, `createAlignment` U-1, plots, `list_layouts` | normal route (`hostRoute: commandContext`), unchanged results |
+| one COM `SendCommand("(princ) ")`, then `getDrawingInfo` | answered in 5.1 s (the grace period); `hostRoute: fallback` from then on |
+| further reads (`getDrawingInfo`, `listSurfaces`, `calculateSurfaceVolumeToDatum`) | 0.1 s each, same values as before the wedge |
+| `createAlignment` U-2 | created through `C3DMCPHOP` in 0.1 s |
+| `plotLayoutsToPdf` (a `-PLOT` sequence) | plotted through `C3DMCPHOP` in 1.2 s, landscape |
+| `UNDO 1`, repeated | undid the plot step, then U-2, then U-1 (made before the wedge): the undo history survived the Idle reads and the edits are undoable |
+| a LISP `getstring` prompt left open over COM, then a write | `CIVIL3D.HOST_BUSY` after 15.0 s; the prompt kept waiting, nothing was typed into it |
+| Esc, then the same write | created in 32 ms |
+
+Not run live: xref changes (`ExecuteLockedWithoutTransactionAsync`) in the
+fallback route, `asJob` operations in the fallback route, a modal dialog in the
+fallback route (covered by jorgegarcias60#2 before the wedge).
+
+## Command-context wedge: the trigger is not deterministic (2026-10-11, live)
+
+Re-run while porting the fix to jorgegarcias60/Civil3D-mcp#4 and upstream #23.
+The PowerShell `SendCommand("(princ) ")` did not wedge the hop in 3 tries, on
+either build. Commands sent by the civil3d-driver (`REGEN`, `UNDO 1`) wedged it
+within one or two commands in three Civil 3D sessions (this fork's build and
+jorgegarcias60's), and not at all in two others. On jorgegarcias60's branch with
+the fix, after the wedge: reads 0.1 s, two `createAlignment` writes through
+`C3DMCPHOP`, both undone by `UNDO 1` twice, and an open LISP `getstring` prompt
+got `HOST_BUSY` after 15.1 s with nothing typed into it.
+
+## Host routes without the command-context hop (2026-10-11, live)
+
+### Diagnosis
+
+A diagnostic build (local branch `diag/wedge`, never merged) logged command,
+LISP, lock-mode, quiescence and modal events, and probed whether a queued
+`ExecuteInCommandContextAsync` callback runs. Each trial started Civil 3D, checked
+that a probe runs, sent one trigger, and probed again (6 s).
+
+| trial | Windows session | loaded | trigger | probe after it |
+|---|---|---|---|---|
+| A1 | disconnected | all four bundles | PowerShell COM `SendCommand("(princ) ")` | never ran |
+| A2 | disconnected | all four bundles | the plugin's own `C3DMCPHOP` (in-process COM `SendCommand`) | never ran |
+| A3 | disconnected | all four bundles | in-process COM `(princ)` | never ran |
+| A4 | disconnected | all four bundles | `SendStringToExecute("(princ) ")` x3 | ran every time |
+| A5b | disconnected | this plugin only, Civil 3D started directly | PowerShell COM `(princ)` | never ran |
+| A6 | connected (RDP) | all four bundles | PowerShell COM `(princ)` x3 | ran (20-51 ms) |
+| A7 | connected (RDP) | all four bundles | `C3DMCPHOP` x2, in-process COM, driver `REGEN` x2, PowerShell COM `REGEN` | ran (12-34 ms) |
+
+- Each callback runs as an internal `EXECUTEFUNCTION` command. In the wedged
+  state, queued callbacks never start it.
+- Meanwhile Idle keeps firing, `CMDACTIVE` is 0, the editor is quiescent, the
+  document is unlocked, and the context is application context. Nothing in the
+  state shows the wedge.
+- Nothing revived it after the first COM command:
+  - waiting;
+  - `SendStringToExecute`, `PostCommandPrompt`;
+  - more in-process or external COM commands, `C3DMCPHOP`;
+  - `WM_NULL`, focus, injected mouse and key input.
+- So in a disconnected session, the first COM `SendCommand` from any client
+  disables the route for the rest of the session. That is why it looked
+  intermittent: it depends on whether anyone is connected to the session.
+  - In the earlier "0 of 3" runs, the PowerShell helper often found no
+    `ActiveDocument`, so nothing was sent.
+  - Not tested: a session that disconnects while Civil 3D runs.
+
+Also found while testing:
+- `Editor.SelectImplied` returns an error outside a `UsePickSet` command, even
+  when LISP `(ssget "_I")` sees 30 objects.
+- `SendStringToExecute` input queued inside a COM-started command mixes with
+  that command's input: `UNDO` received "C3DMCPHOP" as its count.
+- A plugin read under a document lock empties the redo stack.
+
+### The new routes, stress-tested
+
+Build `fix/command-route-only`. The civil3d-driver was loaded and sent commands
+throughout. Run in a disconnected session and again in a connected one: PASS
+both times.
+
+| check | result |
+|---|---|
+| read right after PowerShell COM and driver commands | 0.09-0.32 s |
+| 30 rounds of read + write, COM or driver command every few rounds | all ok; median 0.07-0.10 s, max 0.60 s; 30 alignments |
+| three reads, then command-line `UNDO 1` | removed the last write (reads add no undo step) |
+| write, `undoDrawing`, `redoDrawing`, `undoDrawing` | removed, restored, removed |
+| `computeSurfaceVolume`, `calculateSurfaceVolume`, `qtySurfaceVolume`, `calculateSurfaceVolumeToDatum` | ok; no scratch surface left in the drawing |
+| `plotLayoutsToPdf` C-101, C-102 and Model in one call | 3 PDFs |
+| xref attach, reload, unload, reload, bind | ok (0.1-0.5 s); xref gone after bind |
+| LISP `sssetfirst` of all alignments, then `getSelectedCivilObjectsInfo`, `getProjectContext` | selection reported; still selected afterwards |
+| LISP `getstring` prompt open: read, then write | `HOST_BUSY` after 15 s each; the prompt kept waiting |
+| `LINE` waiting for a point: read | `HOST_BUSY` after 15 s; `LINE` still active, not cancelled |
+| Esc, then read or write | 0.1 s |
+
+Second set (disconnected session):
+
+| check | result |
+|---|---|
+| Drawing Units dialog open, then a read | `HOST_BUSY` "a dialog is open" after 15 s; after closing it (and the lighting notice it raises), a read took 0.24 s |
+| 8 concurrent clients x 5 read/write pairs | 80/80 ok, 40 alignments; gate idle afterwards |
+| client killed while its write waited behind `LINE` | the write never ran; the next write took 0.1 s |
+| `startJob` `plot_layouts_to_pdf` | job completed |
+| `plotPublishSheetSet` (`requireSaved=false`) | PDF written, 3.4 s |
+| second drawing opened | writes go to the active drawing; switching back, a COM command, then a write: ok |
+| soak: 100 rounds of read + write, COM command every 10th | 200/200 ok; median 0.12 s, p95 0.30 s, max 0.40 s |
+| all drawings closed, read; then `newDrawing` and a write | `NO_DRAWING` in 0.07 s; new drawing, write ok |
+
+Plugin-only session, Civil 3D started directly, connected: 40 requests with COM
+commands in between, all ok, median 0.10 s.
+
 ## Deploy-script regression checks
 
 - `install-bundle.ps1` derives `SeriesMin/Max` from the build's target framework
