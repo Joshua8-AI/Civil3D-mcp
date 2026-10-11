@@ -6,12 +6,13 @@ const pluginDirectory = fileURLToPath(new URL("../Civil3D-MCP-Plugin/", import.m
 
 describe("P2 security boundaries", () => {
   it("keeps generated artifact writes behind FileBoundary", () => {
-    const directWritePattern = /File\.WriteAllText|new (?:System\.IO\.)?StreamWriter|new (?:System\.IO\.)?FileStream/;
+    const directWritePattern = /File\.(?:WriteAll(?:Text|Bytes|Lines)|AppendAll(?:Text|Lines))|new (?:System\.IO\.)?StreamWriter|new (?:System\.IO\.)?FileStream/;
     const violations: string[] = [];
 
     for (const fileName of readdirSync(pluginDirectory).filter((name) => name.endsWith(".cs"))) {
-      // PluginLog and RunCodeLog write only the plugin's own logs, next to plugin.log.
-      if (fileName === "FileBoundary.cs" || fileName === "PluginLog.cs" || fileName === "RunCodeLog.cs") continue;
+      // PluginLog and RunCodeLog write only the plugin's own logs, next to plugin.log;
+      // RpcAuth writes only its own %LOCALAPPDATA%\Civil3DMcpPlugin\rpc-token file.
+      if (fileName === "FileBoundary.cs" || fileName === "PluginLog.cs" || fileName === "RunCodeLog.cs" || fileName === "RpcAuth.cs") continue;
       const source = readFileSync(`${pluginDirectory}/${fileName}`, "utf8");
       source.split(/\r?\n/).forEach((line, index) => {
         if (directWritePattern.test(line)) violations.push(`${fileName}:${index + 1}`);

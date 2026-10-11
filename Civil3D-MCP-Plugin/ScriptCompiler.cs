@@ -323,7 +323,7 @@ internal static class ScriptCompiler
   {
     "GetPoint", "GetCorner", "GetDistance", "GetAngle", "GetString", "GetKeywords", "GetInteger",
     "GetDouble", "GetEntity", "GetNestedEntity", "GetSelection", "GetFileNameForOpen",
-    "GetFileNameForSave", "Drag", "Command", "CommandAsync", "StartUserInteraction",
+    "GetFileNameForSave", "Drag", "Command", "CommandAsync", "StartUserInteraction", "DoPrompt",
   };
 
   private static readonly string[] CivilWritePrefixes =
@@ -358,6 +358,52 @@ internal static class ScriptCompiler
         yield return new ScriptDiagnostic(line, column, GuardDiagnosticId, reason);
       }
     }
+
+    if (writeMode)
+    {
+      yield break;
+    }
+
+    // An OpenMode written as a number, such as (OpenMode)1, names no ForWrite
+    // symbol for DenyReason to see. Keyed by member name like the loop above,
+    // so OpenMode.ForWrite is reported once.
+    foreach (var expression in tree.GetRoot().DescendantNodes().OfType<ExpressionSyntax>())
+    {
+      var mode = OpenModeConstant(model, expression);
+      if (mode == null || mode == "ForRead")
+      {
+        continue;
+      }
+
+      var (line, column) = MapToScript(expression.GetLocation());
+      if (line != 0 && reported.Add((line, mode)))
+      {
+        var display = mode.StartsWith("(", StringComparison.Ordinal) ? mode : "OpenMode." + mode;
+        yield return new ScriptDiagnostic(line, column, GuardDiagnosticId,
+          $"Read mode opens objects for read only: {display} is not allowed. Use mode 'write' to change the drawing.");
+      }
+    }
+  }
+
+  // The OpenMode member a constant expression stands for ("ForRead",
+  // "ForWrite"...), "(OpenMode)n" for a value without a member, or null when
+  // the expression is not a constant OpenMode.
+  private static string? OpenModeConstant(SemanticModel model, ExpressionSyntax expression)
+  {
+    var typeInfo = model.GetTypeInfo(expression);
+    var type = new[] { typeInfo.Type, typeInfo.ConvertedType }
+      .OfType<INamedTypeSymbol>()
+      .FirstOrDefault(candidate => candidate.ToDisplayString() == "Autodesk.AutoCAD.DatabaseServices.OpenMode");
+    var constant = type == null ? default : model.GetConstantValue(expression);
+    if (type == null || !constant.HasValue)
+    {
+      return null;
+    }
+
+    var value = Convert.ToInt64(constant.Value);
+    var member = type.GetMembers().OfType<IFieldSymbol>()
+      .FirstOrDefault(field => field.HasConstantValue && Convert.ToInt64(field.ConstantValue) == value);
+    return member?.Name ?? $"(OpenMode){value}";
   }
 
   private static string? DenyReason(ISymbol symbol, SimpleNameSyntax node, SemanticModel model, bool writeMode)
@@ -380,11 +426,23 @@ internal static class ScriptCompiler
         return $"{display} queues command-line input that would run after the script, outside its transaction.";
       }
 
-      if ((typeName is "Autodesk.AutoCAD.ApplicationServices.Application" or "Autodesk.AutoCAD.ApplicationServices.Core.Application"
-           && name is "ShowModalDialog" or "ShowModalWindow" or "ShowAlertDialog" or "Quit")
-          || (typeName is "System.Windows.Forms.MessageBox" or "System.Windows.MessageBox" && name == "Show"))
+      // ShowDialog of any toolkit (WinForms, WPF, Autodesk.AutoCAD.Windows),
+      // so no list of dialog classes is needed.
+      if (name == "ShowDialog"
+          || (typeName is "Autodesk.AutoCAD.ApplicationServices.Application" or "Autodesk.AutoCAD.ApplicationServices.Core.Application"
+              && name is "ShowModalDialog" or "ShowModalWindow" or "ShowAlertDialog" or "Quit")
+          || (typeName is "System.Windows.Forms.MessageBox" or "System.Windows.MessageBox" && name == "Show")
+          || (typeName == "Microsoft.VisualBasic.Interaction" && name is "InputBox" or "MsgBox"))
       {
         return $"{display} opens a modal window or closes Civil 3D, which would block or end the host.";
+      }
+
+      // A nested message loop on the main thread: the run's time budget is
+      // never checked until it ends.
+      if ((typeName is "System.Windows.Forms.Application" or "System.Windows.Application" && name == "Run")
+          || (typeName == "System.Windows.Threading.Dispatcher" && name is "PushFrame" or "Run"))
+      {
+        return $"{display} runs a message loop that blocks Civil 3D until it ends.";
       }
 
       if (typeName == "System.Environment" && name is "Exit" or "FailFast")
@@ -398,9 +456,18 @@ internal static class ScriptCompiler
       return $"Subscribing to {display}: an event handler outlives the run and would fire later, outside any time budget.";
     }
 
+    // TopTransaction hands out the run's transaction without the RunTransaction
+    // wrapper, so a Commit or Dispose through it would end the run's transaction.
+    if (symbol is IPropertySymbol && name == "TopTransaction"
+        && InheritsFrom(type, "Autodesk.AutoCAD.DatabaseServices.TransactionManager"))
+    {
+      return $"{display} is the run's own transaction: use Tr (or TransactionFor(db) for another drawing).";
+    }
+
     // The run owns Tr and the side-database transactions. A snippet's own
     // Tr.Commit() would commit the change and then make the run's commit fail,
-    // so the run would be reported as rolled back.
+    // so the run would be reported as rolled back (at run time the wrapper
+    // throws too; this says so at compile time, with the line).
     if (symbol is IMethodSymbol && name is "Commit" or "Abort" or "Dispose"
         && InheritsFrom(type, "Autodesk.AutoCAD.DatabaseServices.Transaction") && IsRunTransaction(model, node))
     {
@@ -502,15 +569,46 @@ internal static class ScriptCompiler
       && InheritsFrom(method.ContainingType, BaseClassName);
   }
 
+  // Every way of writing to it: X = v, X += v, X++, --X, (X) = v, X!++,
+  // (X, y) = (...) at any tuple depth, and C# 14's Db?.X = v.
   private static bool IsAssignmentTarget(SimpleNameSyntax node)
   {
-    SyntaxNode target = node;
-    if (node.Parent is MemberAccessExpressionSyntax access && access.Name == node)
+    SyntaxNode target = node.Parent switch
     {
-      target = access;
-    }
+      MemberAccessExpressionSyntax access when access.Name == node => access,
+      MemberBindingExpressionSyntax binding => binding,
+      _ => node,
+    };
 
-    return target.Parent is AssignmentExpressionSyntax assignment && assignment.Left == target;
+    while (true)
+    {
+      switch (target.Parent)
+      {
+        case ParenthesizedExpressionSyntax parenthesized:
+          target = parenthesized;
+          continue;
+        // Db.X!++ compiles and writes Db.X.
+        case PostfixUnaryExpressionSyntax suppressed when suppressed.IsKind(SyntaxKind.SuppressNullableWarningExpression):
+          target = suppressed;
+          continue;
+        // A tuple element is written only when the tuple is a deconstruction
+        // target; on the right side or as an argument it is a read.
+        case ArgumentSyntax { Parent: TupleExpressionSyntax tuple }:
+          target = tuple;
+          continue;
+        case AssignmentExpressionSyntax assignment:
+          return assignment.Left == target;
+        // C# itself refuses a property here today (CS8186); kept for completeness.
+        case ForEachVariableStatementSyntax loop:
+          return loop.Variable == target;
+        case PrefixUnaryExpressionSyntax prefix:
+          return prefix.IsKind(SyntaxKind.PreIncrementExpression) || prefix.IsKind(SyntaxKind.PreDecrementExpression);
+        case PostfixUnaryExpressionSyntax postfix:
+          return postfix.IsKind(SyntaxKind.PostIncrementExpression) || postfix.IsKind(SyntaxKind.PostDecrementExpression);
+        default:
+          return false;
+      }
+    }
   }
 
   private static bool InheritsFrom(INamedTypeSymbol? type, string fullName)

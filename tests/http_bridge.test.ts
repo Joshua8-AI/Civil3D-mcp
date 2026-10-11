@@ -478,6 +478,63 @@ describe("httpBridge", () => {
     });
   });
 
+  describe("code execution over the bridge", () => {
+    const runCodeCalls: Array<[string, Record<string, unknown>]> = [
+      ["civil3d_run_code", { code: "return 1;", approvalToken: "t" }],
+      ["civil3d_request_approval", { toolName: "civil3d_run_code", action: "run", parameters: { code: "return 1;" } }],
+      ["civil3d_preview_action", { toolName: "civil3d_run_code", action: "run", parameters: { code: "return 1;" } }],
+      ["civil3d_orchestrate", { toolName: "civil3d_run_code", toolParameters: { code: "return 1;" }, execute: true }],
+      ["civil3d_docs", { action: "orchestrate", toolName: "civil3d_run_code", toolParameters: { code: "return 1;" }, execute: true }],
+    ];
+
+    it.each(runCodeCalls)("refuses %s for civil3d_run_code with 403 when no token is configured", async (tool, parameters) => {
+      hasToolHandlerMock.mockReturnValue(true);
+      executeRegisteredToolMock.mockResolvedValue({ ok: true });
+      handle = await launchBridge({ authToken: "" });
+
+      const res = await request("POST", `${handle.baseUrl}/execute`, {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tool, parameters }),
+      });
+
+      expect(res.status).toBe(403);
+      const error = (res.body as { error: { code: string; message: string } }).error;
+      expect(error.code).toBe("CIVIL3D.FORBIDDEN");
+      expect(error.message).toMatch(/civil3d_run_code is not available over the HTTP bridge without authentication/);
+      expect(error.message).toMatch(/MCP_HTTP_TOKEN/);
+      expect(executeRegisteredToolMock).not.toHaveBeenCalled();
+    });
+
+    it.each(runCodeCalls)("routes %s for civil3d_run_code when the configured token is presented", async (tool, parameters) => {
+      hasToolHandlerMock.mockReturnValue(true);
+      executeRegisteredToolMock.mockResolvedValue({ ok: true });
+      handle = await launchBridge({ authToken: "secret-token" });
+
+      const res = await request("POST", `${handle.baseUrl}/execute`, {
+        headers: { "Content-Type": "application/json", Authorization: "Bearer secret-token" },
+        body: JSON.stringify({ tool, parameters }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(executeRegisteredToolMock).toHaveBeenCalledWith(tool, parameters);
+    });
+
+    it("still routes approvals for other tools without a token", async () => {
+      hasToolHandlerMock.mockImplementation((name) => name === "civil3d_request_approval");
+      executeRegisteredToolMock.mockResolvedValue({ status: "approved" });
+      handle = await launchBridge({ authToken: "" });
+
+      const parameters = { toolName: "civil3d_xref", action: "detach", parameters: { name: "Base" } };
+      const res = await request("POST", `${handle.baseUrl}/execute`, {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tool: "civil3d_request_approval", parameters }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(executeRegisteredToolMock).toHaveBeenCalledWith("civil3d_request_approval", parameters);
+    });
+  });
+
   describe("CORS preflight", () => {
     it("responds to OPTIONS with 204 and the expected CORS headers", async () => {
       handle = await launchBridge();

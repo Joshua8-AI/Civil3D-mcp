@@ -11,8 +11,9 @@
        that must be under TRUSTEDPATHS (Jorge's machine trusts C:\CAD-Tools\...);
     2. writes a marked block into acaddoc.lsp in the Civil 3D roaming support folder (first on the support
        path and trusted by default), which NETLOADs that DLL once per session, from S::STARTUP;
-    3. removes the ApplicationPlugins bundle, so the plugin is not loaded twice (the second copy would
-       fail to open port 8757).
+    3. removes the ApplicationPlugins bundle: it would keep the security prompt at every start, and once
+       loaded its build would run instead of the trusted copy (the block NETLOADs only when the plugin's
+       commands do not exist yet).
 
   acaddoc.lsp runs when a drawing opens: on the Start tab, with no drawing, the plugin is not loaded yet.
   core\tools\Start-Civil3D.ps1 (CAD-Tools) opens a drawing in that case.
@@ -29,7 +30,9 @@
   Trusted root for the plugin. Default C:\CAD-Tools\plugins\Civil3DMcp.
 
 .PARAMETER KeepBundle
-  Leave the ApplicationPlugins bundle installed (the plugin then loads twice; only for testing).
+  Leave the ApplicationPlugins bundle installed (only for testing). Civil 3D then still asks about the
+  bundle's DLL at every start; answered Load Once, the bundle's build runs and the acaddoc.lsp block skips
+  the trusted copy.
 
 .PARAMETER Uninstall
   Remove the acaddoc.lsp block and this release's plugin folder. Reinstall the bundle with
@@ -90,7 +93,12 @@ function Read-TextFile([string] $file) {
   try {
     return @{ Text = (New-Object Text.UTF8Encoding($false, $true)).GetString($bytes); Encoding = New-Object Text.UTF8Encoding($false) }
   } catch {
-    return @{ Text = [Text.Encoding]::Default.GetString($bytes); Encoding = [Text.Encoding]::Default }
+    # Encoding.Default is the ANSI code page only in Windows PowerShell; in PowerShell 7 it is UTF-8, and
+    # the rewrite would turn every accented character into U+FFFD.
+    $ansi = if ($PSVersionTable.PSEdition -eq 'Core') {
+      [Text.Encoding]::GetEncoding([int](Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage').ACP)
+    } else { [Text.Encoding]::Default }
+    return @{ Text = $ansi.GetString($bytes); Encoding = $ansi }
   }
 }
 
@@ -118,12 +126,15 @@ function Set-AcaddocBlock([string] $file, [string] $block) {
   $text = $read.Text
   $pattern = '(?s)\r?\n?' + [regex]::Escape($beginMarker) + '.*?' + [regex]::Escape($endMarker) + '\r?\n?'
   $ours = [regex]::IsMatch($text, $pattern)
+  # Nothing of ours to remove: leave the file exactly as it is (no rewrite, re-encoding or backup).
+  if (-not $block -and -not $ours) { return }
   $text = [regex]::Replace($text, $pattern, "`r`n").Trim()
-  if ($block -and -not $existing) {
-    # A new file would hide an acaddoc.lsp further down the support path: load that one too.
+  if ($block -and (-not $existing -or ($ours -and -not $text))) {
+    # A file that is only ours (new, or holding nothing but our block) hides an acaddoc.lsp further down
+    # the support path. Load that one first, so the block wraps or appends to its S::STARTUP.
     $other = Find-OtherAcaddoc (Split-Path -Parent $file)
     if ($other) {
-      $block = $block.Replace($endMarker, "(vl-catch-all-apply 'load (list `"$($other -replace '\\', '/')`"))`r`n$endMarker")
+      $block = $block.Replace($beginMarker, "$beginMarker`r`n(vl-catch-all-apply 'load (list `"$($other -replace '\\', '/')`"))")
       "  (also loads the acaddoc.lsp further down the support path: $other)"
     }
   }
@@ -166,6 +177,17 @@ if ($changed.Count -gt 0) {
   $locked = Get-LockedFile $target
   if ($locked) { throw "'$locked' is loaded by a running Civil 3D and the build changed. Close Civil 3D completely, then re-run." }
 }
+# The bundles to remove are checked before anything changes too: stopping later would leave the new copy
+# and the acaddoc.lsp block in place with the old bundle still prompting and loading at each start.
+$bundles = @()
+if (-not $KeepBundle) {
+  $plugins = Join-Path $env:APPDATA 'Autodesk\ApplicationPlugins'
+  $bundles = @('Civil3DMcp.bundle', 'Civil3DMcp.bundle.parked' | ForEach-Object { Join-Path $plugins $_ } | Where-Object { Test-Path $_ })
+  foreach ($bundle in $bundles) {
+    $bundleLocked = Get-LockedFile $bundle
+    if ($bundleLocked) { throw "'$bundleLocked' is loaded by a running Civil 3D. Close it completely, then re-run." }
+  }
+}
 New-Item -ItemType Directory -Force (Join-Path $target 'roslyn') | Out-Null
 foreach ($f in $changed) { Copy-Item $f.From $f.To -Force }
 $copied = $changed.Count
@@ -175,7 +197,8 @@ $copied = $changed.Count
 # hand or by a bundle). The DLL folder is chosen by the running release (ACADVER "25.1s ..." -> R25.1),
 # so one block serves 2026 and 2027 side by side. Only an argument-less defun-q is spliced into
 # S::STARTUP: one defined by others with defun-q is appended to, one defined with defun (a compiled
-# function, not a list) is wrapped.
+# function, not a list) is wrapped. An acaddoc.lsp that our file hides is loaded first (Set-AcaddocBlock
+# adds that line), so its S::STARTUP is wrapped or appended to as well.
 $root = ($Destination -replace '\\', '/').TrimEnd('/')
 $block = @"
 $beginMarker
@@ -199,17 +222,9 @@ $endMarker
 "@
 foreach ($dir in $supportDirs) { Set-AcaddocBlock (Join-Path $dir 'acaddoc.lsp') $block; "acaddoc.lsp: $dir\acaddoc.lsp" }
 
-if (-not $KeepBundle) {
-  $plugins = Join-Path $env:APPDATA 'Autodesk\ApplicationPlugins'
-  foreach ($name in 'Civil3DMcp.bundle', 'Civil3DMcp.bundle.parked') {
-    $bundle = Join-Path $plugins $name
-    if (Test-Path $bundle) {
-      $bundleLocked = Get-LockedFile $bundle
-      if ($bundleLocked) { throw "'$bundleLocked' is loaded by a running Civil 3D. Close it completely, then re-run." }
-      Remove-Item $bundle -Recurse -Force
-      "Removed the ApplicationPlugins bundle $bundle (the plugin now loads from $target)."
-    }
-  }
+foreach ($bundle in $bundles) {
+  Remove-Item $bundle -Recurse -Force
+  "Removed the ApplicationPlugins bundle $bundle (the plugin now loads from $target)."
 }
 
 "Installed $copied file(s) in $target"
