@@ -506,6 +506,6 @@ describe("civil3d_plot native implementation guards", () => {
     const execution = pluginSource("CivilExecution.cs");
     const sequence = execution.slice(execution.indexOf("ExecuteCommandSequenceAsync"));
     expect(sequence.indexOf("CIVIL3D.NO_DRAWING")).toBeGreaterThan(-1);
-    expect(sequence.indexOf("CIVIL3D.NO_DRAWING")).toBeLessThan(sequence.indexOf("RunInCommandContextAsync"));
+    expect(sequence.indexOf("CIVIL3D.NO_DRAWING")).toBeLessThan(sequence.indexOf("RunOnHostAsync"));
   });
 });

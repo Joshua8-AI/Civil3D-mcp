@@ -381,6 +381,85 @@ the fix, after the wedge: reads 0.1 s, two `createAlignment` writes through
 `C3DMCPHOP`, both undone by `UNDO 1` twice, and an open LISP `getstring` prompt
 got `HOST_BUSY` after 15.1 s with nothing typed into it.
 
+## Host routes without the command-context hop (2026-10-11, live)
+
+### Diagnosis
+
+A diagnostic build (local branch `diag/wedge`, never merged) logged command,
+LISP, lock-mode, quiescence and modal events, and probed whether a queued
+`ExecuteInCommandContextAsync` callback runs. Each trial started Civil 3D, checked
+that a probe runs, sent one trigger, and probed again (6 s).
+
+| trial | Windows session | loaded | trigger | probe after it |
+|---|---|---|---|---|
+| A1 | disconnected | all four bundles | PowerShell COM `SendCommand("(princ) ")` | never ran |
+| A2 | disconnected | all four bundles | the plugin's own `C3DMCPHOP` (in-process COM `SendCommand`) | never ran |
+| A3 | disconnected | all four bundles | in-process COM `(princ)` | never ran |
+| A4 | disconnected | all four bundles | `SendStringToExecute("(princ) ")` x3 | ran every time |
+| A5b | disconnected | this plugin only, Civil 3D started directly | PowerShell COM `(princ)` | never ran |
+| A6 | connected (RDP) | all four bundles | PowerShell COM `(princ)` x3 | ran (20-51 ms) |
+| A7 | connected (RDP) | all four bundles | `C3DMCPHOP` x2, in-process COM, driver `REGEN` x2, PowerShell COM `REGEN` | ran (12-34 ms) |
+
+- Each callback runs as an internal `EXECUTEFUNCTION` command. In the wedged
+  state, queued callbacks never start it.
+- Meanwhile Idle keeps firing, `CMDACTIVE` is 0, the editor is quiescent, the
+  document is unlocked, and the context is application context. Nothing in the
+  state shows the wedge.
+- Nothing revived it after the first COM command:
+  - waiting;
+  - `SendStringToExecute`, `PostCommandPrompt`;
+  - more in-process or external COM commands, `C3DMCPHOP`;
+  - `WM_NULL`, focus, injected mouse and key input.
+- So in a disconnected session, the first COM `SendCommand` from any client
+  disables the route for the rest of the session. That is why it looked
+  intermittent: it depends on whether anyone is connected to the session.
+  - In the earlier "0 of 3" runs, the PowerShell helper often found no
+    `ActiveDocument`, so nothing was sent.
+  - Not tested: a session that disconnects while Civil 3D runs.
+
+Also found while testing:
+- `Editor.SelectImplied` returns an error outside a `UsePickSet` command, even
+  when LISP `(ssget "_I")` sees 30 objects.
+- `SendStringToExecute` input queued inside a COM-started command mixes with
+  that command's input: `UNDO` received "C3DMCPHOP" as its count.
+- A plugin read under a document lock empties the redo stack.
+
+### The new routes, stress-tested
+
+Build `fix/command-route-only`. The civil3d-driver was loaded and sent commands
+throughout. Run in a disconnected session and again in a connected one: PASS
+both times.
+
+| check | result |
+|---|---|
+| read right after PowerShell COM and driver commands | 0.09-0.32 s |
+| 30 rounds of read + write, COM or driver command every few rounds | all ok; median 0.07-0.10 s, max 0.60 s; 30 alignments |
+| three reads, then command-line `UNDO 1` | removed the last write (reads add no undo step) |
+| write, `undoDrawing`, `redoDrawing`, `undoDrawing` | removed, restored, removed |
+| `computeSurfaceVolume`, `calculateSurfaceVolume`, `qtySurfaceVolume`, `calculateSurfaceVolumeToDatum` | ok; no scratch surface left in the drawing |
+| `plotLayoutsToPdf` C-101, C-102 and Model in one call | 3 PDFs |
+| xref attach, reload, unload, reload, bind | ok (0.1-0.5 s); xref gone after bind |
+| LISP `sssetfirst` of all alignments, then `getSelectedCivilObjectsInfo`, `getProjectContext` | selection reported; still selected afterwards |
+| LISP `getstring` prompt open: read, then write | `HOST_BUSY` after 15 s each; the prompt kept waiting |
+| `LINE` waiting for a point: read | `HOST_BUSY` after 15 s; `LINE` still active, not cancelled |
+| Esc, then read or write | 0.1 s |
+
+Second set (disconnected session):
+
+| check | result |
+|---|---|
+| Drawing Units dialog open, then a read | `HOST_BUSY` "a dialog is open" after 15 s; after closing it (and the lighting notice it raises), a read took 0.24 s |
+| 8 concurrent clients x 5 read/write pairs | 80/80 ok, 40 alignments; gate idle afterwards |
+| client killed while its write waited behind `LINE` | the write never ran; the next write took 0.1 s |
+| `startJob` `plot_layouts_to_pdf` | job completed |
+| `plotPublishSheetSet` (`requireSaved=false`) | PDF written, 3.4 s |
+| second drawing opened | writes go to the active drawing; switching back, a COM command, then a write: ok |
+| soak: 100 rounds of read + write, COM command every 10th | 200/200 ok; median 0.12 s, p95 0.30 s, max 0.40 s |
+| all drawings closed, read; then `newDrawing` and a write | `NO_DRAWING` in 0.07 s; new drawing, write ok |
+
+Plugin-only session, Civil 3D started directly, connected: 40 requests with COM
+commands in between, all ok, median 0.10 s.
+
 ## Deploy-script regression checks
 
 - `install-bundle.ps1` derives `SeriesMin/Max` from the build's target framework

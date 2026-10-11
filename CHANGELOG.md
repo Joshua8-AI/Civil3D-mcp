@@ -4,20 +4,38 @@
 
 ### Fixed
 
-- Every plugin call could hang until Civil 3D restarted after another COM
-  client sent Civil 3D a command (seen on 2027 after a `SendCommand("(princ) ")`
-  from PowerShell and after civil3d-driver commands; not every time). After that, Civil 3D never runs another
-  `ExecuteInCommandContextAsync` callback, and every host operation used that
-  route. An `Application.Idle` watcher now runs next to the command-context hop
-  (ported from jorgegarcias60/Civil3D-mcp#1 and #2): it fails fast with
-  `CIVIL3D.HOST_BUSY` while a command, prompt or modal dialog holds Civil 3D
-  for 15 s, and when the hop has not started after 5 s of idle time it takes
-  over for the rest of the session. Reads then run from the Idle tick with an
-  `OpenCloseTransaction`, which keeps the drawing's undo history (a regular
-  transaction under a document lock outside a command wipes it). Writes,
-  xref changes and command sequences (plot, publish) run inside the plugin's
-  own `C3DMCPHOP` command, started through COM, so edits stay undoable.
-  `getCivil3DHealth` reports `hostRoute` (`commandContext` or `fallback`).
+- Every plugin call hung until Civil 3D restarted once any COM client had run
+  a command with `SendCommand`. Verified on 2027 with only this plugin loaded:
+  in a disconnected Windows session the first such command (from PowerShell,
+  another add-in, or the plugin itself) stops
+  `DocumentManager.ExecuteInCommandContextAsync` from running callbacks for
+  the rest of the session, and nothing revives it. The plugin no longer uses
+  that route:
+  - plain reads run from an `Application.Idle` tick with an
+    `OpenCloseTransaction`, so they add no undo steps and leave the undo
+    history alone (a regular transaction under a document lock outside a
+    command wipes it);
+  - writes, xref changes, command sequences (plot, publish) and reads that
+    create scratch objects (volume surfaces) or use the pickfirst selection run
+    inside the plugin's own `C3DMCPHOP` command, started through COM
+    `SendCommand` only while the editor is quiescent; each write is one
+    undoable step, and the command keeps the user's pickfirst selection;
+  - command-line input (undo, redo, Storm and Sanitary, data-shortcut
+    commands) is sent through COM `SendCommand` after the operation instead of
+    `SendStringToExecute`, whose queued input got mixed into the plugin
+    command's input (`UNDO` received "C3DMCPHOP" as its count).
+  A command, prompt or modal dialog that holds Civil 3D for 15 s now fails the
+  request with `CIVIL3D.HOST_BUSY` (watcher from jorgegarcias60/Civil3D-mcp#1
+  and #2) instead of a 120 s timeout, and plugin calls no longer cancel a
+  command or prompt the user has open.
+- `redoDrawing` sent `REDO n`; `REDO` takes no count, so the count reached the
+  command line as an unknown command. It now sends `MREDO n`, and undo and
+  redo run without a document lock (a plugin read under a lock empties the
+  redo stack).
+- `getSelectedCivilObjectsInfo` and `getProjectContext` read the pickfirst
+  selection inside `C3DMCPHOP`, which is flagged `UsePickSet` and `Redraw`:
+  outside such a command `Editor.SelectImplied` returns an error, and the
+  selection and its grips stay in place afterwards.
 - Style lookups by name never matched on Civil 3D 2027, so a requested style
   was silently replaced by the drawing's first one: `create_layout` with style
   "Design Profile" got "Existing Ground Profile", and `view_create` with style
