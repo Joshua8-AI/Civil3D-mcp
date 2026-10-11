@@ -235,7 +235,7 @@ public static class RunCodeCommands
     {
       // The script never started (start window passed, Civil 3D busy with a
       // command or dialog, no drawing, no compiler): the client gets the
-      // error, summary.json records why.
+      // error, run.json records why.
       if (exception.Code == "CIVIL3D.HOST_BUSY")
       {
         status = "busy";

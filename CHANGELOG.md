@@ -21,7 +21,29 @@
     `C3DMCPHOP`: committed as one undo step, rolled back on an exception or
     timeout (changes outside the transaction, such as database or system
     variables, files and `Session`, are not). Both refuse Editor prompts,
-    modal dialogs and event subscriptions.
+    modal windows and message loops (any `ShowDialog`, `MessageBox`,
+    `InputBox`, `Application.Run`, `Dispatcher.PushFrame`), event
+    subscriptions and `TopTransaction`; read mode counts `++`/`--`, compound
+    assignment and deconstruction as setting a drawing property, and refuses a
+    numeric `OpenMode` other than `ForRead`.
+  - The script gets `Tr` and `TransactionFor(...)` as wrappers the run owns:
+    `Commit()`/`Abort()` throw with a message, `Dispose()`/`using` do nothing,
+    so `var tx = Tr; tx.Commit();` can neither commit behind the run's back
+    nor leave a disposed transaction that crashes the next call. Write
+    responses report `committed` as `true`, `false` or `"unknown"`.
+  - The plugin refuses `runCode` without this session's token
+    (`%LOCALAPPDATA%\Civil3DMcpPlugin\rpc-token`, written when the plugin
+    starts listening, deleted when it stops; other methods are not gated): the
+    MCP server reads and sends it, so server and plugin must come from the same
+    build. The HTTP bridge refuses the tool (and approving, previewing or
+    orchestrating it) unless `MCP_HTTP_TOKEN` is set.
+  - A run either starts with its full budget or not at all: one that cannot
+    start within 30 s because Civil 3D is busy fails with `CIVIL3D.HOST_BUSY`
+    and changes nothing. The MCP call waits for the budget plus 60 s, and a
+    timeout message says where the run's `run.json` is.
+  - Requests over the plugin's 1 MiB limit are refused before sending
+    (`CIVIL3D.REQUEST_TOO_LARGE`, for every tool); `civil3d_run_code` refuses
+    `code` plus `args` over about 1 MB of JSON before approval.
   - Cooperative time budget (`timeoutSeconds`, default 30, max 90): `Check()`
     ends the script when it is used up or the request is cancelled, and stays
     tripped if the script catches it; a script that never calls it cannot be
@@ -44,12 +66,23 @@
   marked `acaddoc.lsp` block, so Civil 3D no longer asks "Security - Unsigned
   Executable File" at every start as it does for the `%APPDATA%` bundle; removes
   the bundle; `-Uninstall` reverses. The plugin then loads when a drawing opens.
+  An `acaddoc.lsp` further down the support path, which the new file would
+  shadow, is loaded first (so its `S::STARTUP` is chained, not lost) and stays
+  chained when the installer runs again. Every lock (a changed build, the old
+  bundle) is checked before anything is changed; `-Uninstall` leaves
+  `acaddoc.lsp` files without our block untouched; ANSI files keep their
+  encoding under PowerShell 7 too.
 - `install-bundle.ps1` no longer claims the bundle folder is trusted: Civil 3D
   2026 prompts for it at every start (answer Load Once).
-- `claude-bootstrap-and-run.ps1` rebuilds the server when `src\`,
-  `package.json` or `tsconfig.json` changed since the last build, not only
-  when there is no build: after a `git pull`, new tools appear without a
-  manual `npm run build`.
+- `claude-bootstrap-and-run.ps1` runs `npm install` when `package.json` or
+  `package-lock.json` changed since the last install, and rebuilds when any
+  build input changed (source files, including deletions and renames, the
+  package files, `tsconfig.json`, the copied assets), not only when there is no
+  build: after a `git pull`, new tools appear without a manual build. A failed
+  or interrupted build is rebuilt at the next start instead of running half a
+  build. npm output goes to `%TEMP%\civil3d-mcp-bootstrap.log` (its tail to
+  stderr on failure), never to stdout, and an npm notice on stderr no longer
+  stops the start under Windows PowerShell 5.1.
 
 ### Fixed
 

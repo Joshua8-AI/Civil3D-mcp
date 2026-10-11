@@ -126,7 +126,7 @@ export const CODE_DOMAIN_DEFINITION: DomainToolDefinition = {
           if (error instanceof Civil3DRpcError && error.code === "CIVIL3D.TIMEOUT") {
             throw new Civil3DRpcError(
               `${error.message}. The script may have run: before retrying, open the newest folder in ` +
-              "%LOCALAPPDATA%\\Civil3DMcpPlugin\\run-code\\ and read its summary.json (status, committed).",
+              "%LOCALAPPDATA%\\Civil3DMcpPlugin\\run-code\\ (next to plugin.log) and read its run.json (status, committed).",
               error.code,
               error.rpcCode,
             );

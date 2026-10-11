@@ -10,9 +10,12 @@
 //   --allow-writes, only the read cases run.
 // --side: a DWG read as a side database (never opened, never changed) for the
 //   OpenSide and bulk-sampling cases; skipped when not given.
+import { existsSync, readFileSync } from "node:fs";
+import net from "node:net";
 import { parseArgs } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { pluginTokenPath, readPluginToken } from "../build/utils/pluginAuth.js";
 
 // Strict: an unknown option or a missing value is an error, never a silently disabled guard.
 const { values: options } = parseArgs({
@@ -63,6 +66,34 @@ async function run(parameters) {
   const response = await call("civil3d_run_code", { ...parameters, approvalToken });
   if (response.isError) throw new Error(`civil3d_run_code failed: ${text(response)}`);
   return response.structuredContent.result;
+}
+
+// One JSON-RPC request straight to the plugin's port, bypassing the MCP server
+// (and its approval): for the token and start-window cases. The socket is not
+// half-closed before the answer, because the plugin cancels a request whose
+// client closes.
+function rawRpc(method, params, timeoutMs = 120_000) {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host: "127.0.0.1", port: Number(process.env.CIVIL3D_PORT ?? 8757) });
+    let data = "";
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      fn(value);
+    };
+    const timer = setTimeout(() => finish(reject, new Error(`raw ${method} timed out`)), timeoutMs);
+    socket.setEncoding("utf8");
+    socket.on("connect", () => socket.write(JSON.stringify({ jsonrpc: "2.0", id: `smoke-${process.pid}-${method}`, method, params })));
+    socket.on("data", (chunk) => {
+      data += chunk;
+      try { finish(resolve, JSON.parse(data)); } catch { /* not complete yet */ }
+    });
+    socket.on("error", (error) => finish(reject, error));
+    socket.on("close", () => finish(reject, new Error(`raw ${method}: connection closed without a complete answer (${data.length} chars)`)));
+  });
 }
 
 async function check(name, fn) {
@@ -117,6 +148,40 @@ try {
   await check("read mode refuses OpenMode.ForWrite", async () => {
     const response = await run({ code: "foreach (var e in ModelSpace<Entity>()) Tr.GetObject(e.ObjectId, OpenMode.ForWrite);\nreturn 0;" });
     record("read mode refuses OpenMode.ForWrite", response.status === "rejected" && response.errors?.[0]?.code === "C3DMCP001", response.errors);
+  });
+
+  await check("read mode refuses Db.Ltscale++", async () => {
+    const response = await run({ code: "Db.Ltscale++;\nreturn 0;" });
+    record("read mode refuses Db.Ltscale++", response.status === "rejected" && response.errors?.[0]?.code === "C3DMCP001", response.errors);
+  });
+
+  await check("using on Tr does nothing: Tr still works after it", async () => {
+    const response = await run({ code: "{ using var tx = Tr; }\nreturn Open<DBObject>(Db.BlockTableId).Handle.ToString();" });
+    record("using on Tr does nothing: Tr still works after it", response.status === "ok" && typeof response.result === "string", { status: response.status, result: response.result, error: response.error });
+  });
+
+  await check("the plugin wrote this session's rpc-token", async () => {
+    const path = pluginTokenPath();
+    const token = existsSync(path) ? readFileSync(path, "utf8").trim() : "";
+    record("the plugin wrote this session's rpc-token", /^[0-9A-F]{64}$/i.test(token), { path, length: token.length });
+  });
+
+  await check("runCode without the token is refused (raw TCP)", async () => {
+    const missing = await rawRpc("runCode", { code: "return 1;" });
+    const wrong = await rawRpc("runCode", { code: "return 1;", authToken: "0".repeat(64) });
+    record("runCode without the token is refused (raw TCP)",
+      missing.error?.data?.code === "CIVIL3D.AUTH_REQUIRED" && wrong.error?.data?.code === "CIVIL3D.AUTH_REQUIRED",
+      { missing: missing.error?.data?.code ?? missing.result, wrong: wrong.error?.data?.code ?? wrong.result });
+  });
+
+  await check("start window: a run that cannot start in time fails HOST_BUSY", async () => {
+    const long = run({ code: "while (Elapsed.TotalSeconds < 12) Check();\nreturn 1;", timeoutSeconds: 30 });
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    const busy = await rawRpc("runCode", { code: "return 1;", mode: "read", timeoutSeconds: 10, startWithinSeconds: 3, authToken: readPluginToken() });
+    const first = await long;
+    record("start window: a run that cannot start in time fails HOST_BUSY",
+      busy.error?.data?.code === "CIVIL3D.HOST_BUSY" && first.status === "ok",
+      { busy: busy.error ? `${busy.error.data?.code}: ${busy.error.message}` : busy.result, first: first.status });
   });
 
   await check("runtime error with its line", async () => {
@@ -263,6 +328,53 @@ try {
     });
     const after = await run({ code: countTagged, args: { tag: `${tag}-SWALLOWED` } });
     record("write: a timeout the script catches is still rolled back", swallowed.status === "timeout" && after.result === 0, { status: swallowed.status, after: after.result, warnings: swallowed.warnings });
+  });
+
+  await check("write: Commit through an alias of Tr is refused and rolled back", async () => {
+    const aliased = await run({
+      mode: "write",
+      args: { tag: `${tag}-ALIAS` },
+      code: [
+        "var tx = Tr;",
+        "var ms = Open<BlockTableRecord>(SymbolUtilityServices.GetBlockModelSpaceId(Db), forWrite: true);",
+        "var text = new DBText { TextString = (string)Args[\"tag\"], Position = new Point3d(-1e6, -1e6, 0), Height = 1 };",
+        "ms.AppendEntity(text);",
+        "tx.AddNewlyCreatedDBObject(text, true);",
+        "tx.Commit();",
+        "return 1;",
+      ].join("\n"),
+    });
+    const after = await run({ code: countTagged, args: { tag: `${tag}-ALIAS` } });
+    record("write: Commit through an alias of Tr is refused and rolled back",
+      aliased.status === "runtime_error" && aliased.committed === false && /owns Tr/.test(aliased.error?.message ?? "") && after.result === 0,
+      { status: aliased.status, committed: aliased.committed, error: aliased.error?.message, after: after.result });
+  });
+
+  await check("write: using var tx = Tr commits as usual, one undo removes it", async () => {
+    const add = await run({
+      mode: "write",
+      args: { tag: `${tag}-USING` },
+      code: [
+        "using var tx = Tr;",
+        "var ms = (BlockTableRecord)tx.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(Db), OpenMode.ForWrite);",
+        "var text = new DBText { TextString = (string)Args[\"tag\"], Position = new Point3d(-1e6, -1e6, 0), Height = 1 };",
+        "ms.AppendEntity(text);",
+        "tx.AddNewlyCreatedDBObject(text, true);",
+        "return text.Handle.ToString();",
+      ].join("\n"),
+    });
+    const afterAdd = await run({ code: countTagged, args: { tag: `${tag}-USING` } });
+    let undo = { isError: true, content: [{ text: "not sent: the add did not commit" }] };
+    let afterUndo = { result: afterAdd.result };
+    if (add.status === "ok" && add.committed === true && afterAdd.result === 1) {
+      const undoToken = await approve("civil3d_drawing", "undo", { action: "undo", steps: 1 });
+      undo = await call("civil3d_drawing", { action: "undo", steps: 1, approvalToken: undoToken });
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      afterUndo = await run({ code: countTagged, args: { tag: `${tag}-USING` } });
+    }
+    record("write: using var tx = Tr commits as usual, one undo removes it",
+      add.status === "ok" && add.committed === true && afterAdd.result === 1 && !undo.isError && afterUndo.result === 0,
+      { add: add.status, committed: add.committed, error: add.error?.message, afterAdd: afterAdd.result, undo: undo.isError ? text(undo) : "ok", afterUndo: afterUndo.result });
   });
 
   }
