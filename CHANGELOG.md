@@ -4,9 +4,9 @@
 
 ### Fixed
 
-- Every plugin call hung until Civil 3D restarted once any COM client had sent
-  Civil 3D a command (verified on 2027: one `SendCommand("(princ) ")` from
-  another process is enough). After that, Civil 3D never runs another
+- Every plugin call could hang until Civil 3D restarted after another COM
+  client sent Civil 3D a command (seen on 2027 after a `SendCommand("(princ) ")`
+  from PowerShell and after civil3d-driver commands; not every time). After that, Civil 3D never runs another
   `ExecuteInCommandContextAsync` callback, and every host operation used that
   route. An `Application.Idle` watcher now runs next to the command-context hop
   (ported from jorgegarcias60/Civil3D-mcp#1 and #2): it fails fast with

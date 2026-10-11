@@ -337,7 +337,8 @@ the command line) is fixed below.
 
 Cause, reproduced on Civil 3D 2027 with the plugin alone: after Civil 3D
 started and a drawing was open, one COM `SendCommand("(princ) ")` from another
-process (PowerShell) was enough. From then on no `ExecuteInCommandContextAsync`
+process (PowerShell) was enough in 3 of 3 runs that day (but see 2026-10-11
+below: it is not deterministic). From then on no `ExecuteInCommandContextAsync`
 callback ran, not even one queued from the main thread, and every plugin call
 hung holding the host gate until Civil 3D restarted. Meanwhile
 `Application.Idle` kept firing (373 ticks in 3 s) and `CMDACTIVE` was 0. None of
@@ -368,6 +369,17 @@ Live, on a copy of the HW 03 drawing:
 Not run live: xref changes (`ExecuteLockedWithoutTransactionAsync`) in the
 fallback route, `asJob` operations in the fallback route, a modal dialog in the
 fallback route (covered by jorgegarcias60#2 before the wedge).
+
+## Command-context wedge: the trigger is not deterministic (2026-10-11, live)
+
+Re-run while porting the fix to jorgegarcias60/Civil3D-mcp#4 and upstream #23.
+The PowerShell `SendCommand("(princ) ")` did not wedge the hop in 3 tries, on
+either build. Commands sent by the civil3d-driver (`REGEN`, `UNDO 1`) wedged it
+within one or two commands in three Civil 3D sessions (this fork's build and
+jorgegarcias60's), and not at all in two others. On jorgegarcias60's branch with
+the fix, after the wedge: reads 0.1 s, two `createAlignment` writes through
+`C3DMCPHOP`, both undone by `UNDO 1` twice, and an open LISP `getstring` prompt
+got `HOST_BUSY` after 15.1 s with nothing typed into it.
 
 ## Deploy-script regression checks
 

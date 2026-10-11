@@ -267,12 +267,14 @@ public static class CivilExecution
   //  - 2026-09-25 (jorgegarcias60/Civil3D-mcp#1): a LISP expression sent over
   //    COM waited for input, a request queued behind it, and after the prompt
   //    was cancelled every later ExecuteInCommandContextAsync stayed queued;
-  //  - 2026-10-10: a single COM SendCommand("(princ) ") from another process,
-  //    with no prompt left open, is enough. Afterwards Application.Idle keeps
-  //    firing (about 120 ticks a second), but no command-context callback
-  //    runs, not even one queued from the main thread, and WM_NULL,
-  //    WM_MOUSEMOVE, key messages, another COM command or switching the
-  //    active document do not bring the route back.
+  //  - 2026-10-10/11: with no prompt left open, after another process ran a
+  //    command: a COM SendCommand("(princ) ") from PowerShell (3 of 3 runs one
+  //    day, 0 of 3 the next) or a command run by a COM automation tool
+  //    (several times). Not every external command does it. Afterwards
+  //    Application.Idle keeps firing (about 120 ticks a second), but no
+  //    command-context callback runs, not even one queued from the main
+  //    thread, and WM_NULL, WM_MOUSEMOVE, key messages, another COM command or
+  //    switching the active document do not bring the route back.
   private static volatile bool _commandContextWedged;
 
   // Runs the operation on the host's main thread exactly once. The normal
@@ -371,7 +373,7 @@ public static class CivilExecution
             CoreApp.Idle -= idle;
             done.TrySetException(new JsonRpcDispatchException(
               "CIVIL3D.HOST_BUSY",
-              "Civil 3D has a command or prompt in progress (CMDACTIVE is not 0). Finish it or press Esc in Civil 3D, then retry. No drawing changes were made."));
+              "Civil 3D has a command or prompt in progress. Finish it or press Esc in Civil 3D, then retry. No drawing changes were made."));
           }
 
           return;
