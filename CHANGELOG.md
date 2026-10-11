@@ -17,6 +17,16 @@
   inside a modal loop, so neither hop nor the watcher could run. A watchdog on
   the timer thread now fails the request with `CIVIL3D.HOST_BUSY` after 15 s
   without an Idle tick.
+- In that fallback, requests no longer run outside a command with a regular
+  transaction: a document lock plus a regular transaction outside a command
+  wipes the drawing's undo history, even for a read, and edits made there are
+  not undoable. Reads use an `OpenCloseTransaction` (the undo history
+  survives), and writes run inside the plugin's own `C3DMCPHOP` command,
+  started over COM only while the editor is quiescent, so they are undoable
+  and never typed into a waiting prompt. The wedge also follows ordinary
+  commands sent by other COM clients with no prompt left open (not every
+  time). `getCivil3DHealth` reports `hostRoute` (`commandContext` or
+  `fallback`).
 - With no document open, drawing-dependent requests hung and wedged the
   plugin's execution gate; they now fail fast with `CIVIL3D.NO_DRAWING`, and
   `civil3d_drawing new` works from zero documents.
