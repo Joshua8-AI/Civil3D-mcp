@@ -156,7 +156,8 @@ public abstract class RunCodeScript
 
   /// <summary>
   /// Opens an object through the run's transaction for its database (the
-  /// drawing's or a side database's). forWrite needs mode 'write'.
+  /// drawing's or a side database's; an attached xref's objects through the
+  /// drawing's, read only). forWrite needs mode 'write'.
   /// </summary>
   public T Open<T>(ObjectId id, bool forWrite = false) where T : DBObject
   {
@@ -165,7 +166,26 @@ public abstract class RunCodeScript
       throw new InvalidOperationException("Open(id, forWrite: true) needs mode 'write'.");
     }
 
-    var obj = TransactionFor(id.Database).GetObject(id, forWrite ? OpenMode.ForWrite : OpenMode.ForRead);
+    // Objects of an attached xref (its dependent block definitions and what is
+    // in them) report the xref's database, which has no transaction of its own
+    // in the run; the drawing's transaction opens them, for read only.
+    var db = id.Database;
+    Transaction transaction;
+    if (db is { IsDisposed: false } && !_transactions.ContainsKey(db))
+    {
+      if (forWrite)
+      {
+        throw new InvalidOperationException($"Object {id.Handle} belongs to an attached xref (or another database this run did not open): it can be read, not opened for write.");
+      }
+
+      transaction = Tr;
+    }
+    else
+    {
+      transaction = TransactionFor(db);
+    }
+
+    var obj = transaction.GetObject(id, forWrite ? OpenMode.ForWrite : OpenMode.ForRead);
     return obj as T ?? throw new InvalidCastException($"Object {id.Handle} is a {obj.GetType().Name}, not a {typeof(T).Name}.");
   }
 
