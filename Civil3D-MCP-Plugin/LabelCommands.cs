@@ -77,7 +77,20 @@ public static class LabelCommands
       if (string.Equals(objectType, "alignment", StringComparison.OrdinalIgnoreCase) && string.Equals(labelType, "label_set", StringComparison.OrdinalIgnoreCase))
       {
         var labelSetId = LookupUtils.GetAlignmentLabelSetId(civilDoc, transaction, labelStyle);
-        ApplyObjectIdProperty(target, labelSetId, "LabelSetId");
+        if (labelSetId == ObjectId.Null)
+        {
+          throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Alignment label set '{labelStyle}' was not found.");
+        }
+
+        // Alignment has no LabelSetId property; the old reflection setter always
+        // failed with "does not expose a writable label set property".
+        // ImportLabelSet only needs the alignment's id: it erases the existing
+        // label groups and creates new ones as separate objects, without
+        // write-checking the alignment (IL-verified, live-tested on 2026), so
+        // the read-open alignment is enough. It ignores the native result, so
+        // the group count is returned to make a silent no-op visible.
+        var alignment = (Autodesk.Civil.DatabaseServices.Alignment)target;
+        alignment.ImportLabelSet(labelSetId);
         return new Dictionary<string, object?>
         {
           ["objectType"] = objectType,
@@ -85,6 +98,24 @@ public static class LabelCommands
           ["labelType"] = labelType,
           ["labelStyle"] = ResolveObjectName(transaction, labelSetId),
           ["applied"] = true,
+          ["labelGroups"] = alignment.GetAlignmentLabelGroupIds().Count,
+        };
+      }
+
+      if (string.Equals(objectType, "alignment", StringComparison.OrdinalIgnoreCase) && string.Equals(labelType, "curves", StringComparison.OrdinalIgnoreCase))
+      {
+        var styleId = FindStyleInCollection(transaction, civilDoc.Styles.LabelStyles.AlignmentLabelStyles.CurveLabelStyles, labelStyle, "alignment curve label");
+        var handles = CreateAlignmentCurveLabels((Autodesk.Civil.DatabaseServices.Alignment)target, styleId)
+          .Select(labelId => ResolveHandle(transaction, labelId))
+          .ToList();
+        return new Dictionary<string, object?>
+        {
+          ["objectType"] = objectType,
+          ["objectName"] = objectName,
+          ["labelType"] = labelType,
+          ["labelStyle"] = ResolveObjectName(transaction, styleId),
+          ["handles"] = handles,
+          ["created"] = handles.Count,
         };
       }
 
@@ -113,16 +144,11 @@ public static class LabelCommands
 
       if (string.Equals(objectType, "profile", StringComparison.OrdinalIgnoreCase) && string.Equals(labelType, "label_set", StringComparison.OrdinalIgnoreCase))
       {
-        var labelSetId = LookupUtils.GetProfileLabelSetId(civilDoc, transaction, labelStyle);
-        ApplyObjectIdProperty(target, labelSetId, "LabelSetId");
-        return new Dictionary<string, object?>
-        {
-          ["objectType"] = objectType,
-          ["objectName"] = objectName,
-          ["labelType"] = labelType,
-          ["labelStyle"] = ResolveObjectName(transaction, labelSetId),
-          ["applied"] = true,
-        };
+        // Verified on Civil 3D 2026 (2026-10-11): only Alignment has ImportLabelSet;
+        // Profile and ProfileView expose no label-set member at all.
+        throw new JsonRpcDispatchException(
+          "CIVIL3D.INVALID_INPUT",
+          "Profile label sets cannot be assigned through the Civil 3D .NET API (only alignments have ImportLabelSet). Set them in Profile View Properties > Profiles > Labels, or add profile station labels.");
       }
 
       if (string.Equals(objectType, "profile", StringComparison.OrdinalIgnoreCase) && string.Equals(labelType, "station", StringComparison.OrdinalIgnoreCase))
@@ -171,37 +197,43 @@ public static class LabelCommands
 
       if (string.Equals(objectType, "pipe", StringComparison.OrdinalIgnoreCase))
       {
-        var styleId = FindLabelStyleId(civilDoc, transaction, objectType, labelStyle);
-        var labelId = CreatePipeLabel(target, styleId, labelType);
+        var styleId = FindStyleInCollection(transaction, civilDoc.Styles.LabelStyles.PipeLabelStyles.PlanProfileLabelStyles, labelStyle, "pipe label");
+        var labelIds = CreatePipeLabels(transaction, (Autodesk.Civil.DatabaseServices.Pipe)target, styleId, labelType, out var skipped);
         return new Dictionary<string, object?>
         {
           ["objectType"] = objectType,
           ["objectName"] = objectName,
           ["labelType"] = labelType,
           ["labelStyle"] = ResolveObjectName(transaction, styleId),
-          ["handle"] = ResolveHandle(transaction, labelId),
-          ["created"] = true,
+          ["handle"] = ResolveHandle(transaction, labelIds[0]),
+          ["handles"] = labelIds.Select(labelId => ResolveHandle(transaction, labelId)).ToList(),
+          ["created"] = labelIds.Count,
+          ["skipped"] = skipped,
         };
       }
 
       if (string.Equals(objectType, "structure", StringComparison.OrdinalIgnoreCase))
       {
-        var styleId = FindLabelStyleId(civilDoc, transaction, objectType, labelStyle);
-        var labelId = CreateStructureLabel(target, styleId, labelType);
+        var styleId = FindStyleInCollection(transaction, civilDoc.Styles.LabelStyles.StructureLabelStyles.LabelStyles, labelStyle, "structure label");
+        // A structure shown in several profile views (a matchline) gets one
+        // label per view; return them all so none is left untracked.
+        var labelIds = CreateStructureLabels(transaction, (Autodesk.Civil.DatabaseServices.Structure)target, styleId, labelType, out var skipped);
         return new Dictionary<string, object?>
         {
           ["objectType"] = objectType,
           ["objectName"] = objectName,
           ["labelType"] = labelType,
           ["labelStyle"] = ResolveObjectName(transaction, styleId),
-          ["handle"] = ResolveHandle(transaction, labelId),
-          ["created"] = true,
+          ["handle"] = ResolveHandle(transaction, labelIds[0]),
+          ["handles"] = labelIds.Select(labelId => ResolveHandle(transaction, labelId)).ToList(),
+          ["created"] = labelIds.Count,
+          ["skipped"] = skipped,
         };
       }
 
       throw new JsonRpcDispatchException(
         "CIVIL3D.INVALID_INPUT",
-        $"addLabel currently supports alignment/profile 'label_set', alignment/profile 'station', surface 'spot_elevation', and basic pipe/structure labels. Requested objectType='{objectType}', labelType='{labelType}'."
+        $"addLabel currently supports alignment 'label_set', alignment/profile 'station', alignment 'curves', surface 'spot_elevation', and pipe/structure 'plan' or 'profile' labels. Requested objectType='{objectType}', labelType='{labelType}'."
       );
     });
   }
@@ -210,6 +242,8 @@ public static class LabelCommands
   {
     if (string.Equals(objectType, "alignment", StringComparison.OrdinalIgnoreCase))
     {
+      // Always opened for read, whatever openMode says: no label path changes
+      // the alignment object itself. A branch that does must call UpgradeOpen.
       return CivilObjectUtils.FindAlignmentByName((Autodesk.Civil.ApplicationServices.CivilDocument)civilDoc, transaction, objectName);
     }
 
@@ -320,8 +354,10 @@ public static class LabelCommands
       "profile" => GetNamedMemberValue(labelSetStyles, "ProfileLabelSetStyles") ?? GetNamedMemberValue(styles, "ProfileLabelStyles"),
       "surface" => GetNamedMemberValue(styles, "SurfaceLabelStyles"),
       "pipe_network" => GetNamedMemberValue(styles, "PipeNetworkLabelStyles") ?? GetNamedMemberValue(styles, "PipeLabelStyles"),
-      "pipe" => GetNamedMemberValue(styles, "PipeLabelStyles") ?? GetNamedMemberValue(styles, "PipeNetworkLabelStyles"),
-      "structure" => GetNamedMemberValue(styles, "StructureLabelStyles") ?? GetNamedMemberValue(styles, "PipeNetworkLabelStyles"),
+      // Pipe and structure label styles live under Styles.LabelStyles; the
+      // Styles-level names probed before do not exist, so both came back empty.
+      "pipe" => ((Autodesk.Civil.ApplicationServices.CivilDocument)civilDoc).Styles.LabelStyles.PipeLabelStyles.PlanProfileLabelStyles,
+      "structure" => ((Autodesk.Civil.ApplicationServices.CivilDocument)civilDoc).Styles.LabelStyles.StructureLabelStyles.LabelStyles,
       _ => null,
     };
 
@@ -401,7 +437,7 @@ public static class LabelCommands
         continue;
       }
 
-      var name = CivilObjectUtils.GetName(transaction.GetObject(objectId, OpenMode.ForRead));
+      var name = CivilObjectUtils.GetName(transaction.GetObject(objectId, OpenMode.ForRead)) ?? string.Empty;
       if (string.Equals(name, labelStyle, StringComparison.OrdinalIgnoreCase))
       {
         return objectId;
@@ -487,48 +523,209 @@ public static class LabelCommands
     );
   }
 
-  private static ObjectId CreatePipeLabel(DBObject pipe, ObjectId styleId, string labelType)
+  private static ObjectId FindStyleInCollection(Transaction transaction, IEnumerable collection, string? styleName, string description)
   {
-    var candidateTypes = string.Equals(labelType, "plan", StringComparison.OrdinalIgnoreCase)
-      ? new[]
+    var fallback = ObjectId.Null;
+    var available = new List<string>();
+    foreach (var item in collection)
+    {
+      if (item is not ObjectId objectId || objectId == ObjectId.Null)
       {
-        "Autodesk.Civil.DatabaseServices.Labels.PipePlanLabel, AeccDbMgd",
-        "Autodesk.Civil.DatabaseServices.PipePlanLabel, AeccDbMgd",
+        continue;
       }
-      : new[]
-      {
-        "Autodesk.Civil.DatabaseServices.Labels.PipeLabel, AeccDbMgd",
-        "Autodesk.Civil.DatabaseServices.PipeLabel, AeccDbMgd",
-        "Autodesk.Civil.DatabaseServices.Labels.PipePlanLabel, AeccDbMgd",
-      };
 
-    return TryCreateLabel(
-      candidateTypes,
-      "pipe",
-      parameters => BuildSingleObjectLabelArguments(parameters, pipe.ObjectId, styleId)
-    );
+      if (fallback == ObjectId.Null)
+      {
+        fallback = objectId;
+      }
+
+      var name = CivilObjectUtils.GetName(transaction.GetObject(objectId, OpenMode.ForRead)) ?? string.Empty;
+      available.Add(name);
+      if (!string.IsNullOrWhiteSpace(styleName) && string.Equals(name, styleName, StringComparison.OrdinalIgnoreCase))
+      {
+        return objectId;
+      }
+    }
+
+    if (!string.IsNullOrWhiteSpace(styleName))
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"The {description} style '{styleName}' was not found. Available: {string.Join(", ", available)}.");
+    }
+
+    if (fallback == ObjectId.Null)
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"This drawing has no {description} style.");
+    }
+
+    return fallback;
   }
 
-  private static ObjectId CreateStructureLabel(DBObject structure, ObjectId styleId, string labelType)
+  private static IReadOnlyList<ObjectId> CreateAlignmentCurveLabels(Autodesk.Civil.DatabaseServices.Alignment alignment, ObjectId styleId)
   {
-    var candidateTypes = string.Equals(labelType, "plan", StringComparison.OrdinalIgnoreCase)
-      ? new[]
+    var labelIds = new List<ObjectId>();
+    foreach (Autodesk.Civil.DatabaseServices.AlignmentEntity entity in alignment.Entities)
+    {
+      if (entity is Autodesk.Civil.DatabaseServices.AlignmentArc arc)
       {
-        "Autodesk.Civil.DatabaseServices.Labels.StructurePlanLabel, AeccDbMgd",
-        "Autodesk.Civil.DatabaseServices.StructurePlanLabel, AeccDbMgd",
+        labelIds.Add(Autodesk.Civil.DatabaseServices.AlignmentCurveLabel.Create(arc, styleId));
+        continue;
       }
-      : new[]
-      {
-        "Autodesk.Civil.DatabaseServices.Labels.StructureLabel, AeccDbMgd",
-        "Autodesk.Civil.DatabaseServices.StructureLabel, AeccDbMgd",
-        "Autodesk.Civil.DatabaseServices.Labels.StructurePlanLabel, AeccDbMgd",
-      };
 
-    return TryCreateLabel(
-      candidateTypes,
-      "structure",
-      parameters => BuildSingleObjectLabelArguments(parameters, structure.ObjectId, styleId)
-    );
+      // Compound curves (spiral-curve-spiral, reverse and compound arcs, ...)
+      // are their own entity types and hold their arcs as sub-entities, which
+      // AlignmentCurveLabel.Create has an overload for.
+      for (var i = 0; i < entity.SubEntityCount; i++)
+      {
+        if (entity[i] is Autodesk.Civil.DatabaseServices.AlignmentSubEntityArc subArc)
+        {
+          labelIds.Add(Autodesk.Civil.DatabaseServices.AlignmentCurveLabel.Create(subArc, styleId));
+        }
+      }
+    }
+
+    if (labelIds.Count == 0)
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"Alignment '{alignment.Name}' has no arcs to label (neither simple arcs nor arcs inside compound curves).");
+    }
+
+    return labelIds;
+  }
+
+  // "plan" labels the pipe in plan at its midpoint; "profile" labels it in every
+  // profile view that displays it. The type names probed before (PipePlanLabel,
+  // Labels.PipeLabel) do not exist, so "profile" silently produced a PLAN label
+  // with the default style.
+  private static IReadOnlyList<ObjectId> CreatePipeLabels(Transaction transaction, Autodesk.Civil.DatabaseServices.Pipe pipe, ObjectId styleId, string labelType, out int skipped)
+  {
+    skipped = 0;
+    if (string.Equals(labelType, "profile", StringComparison.OrdinalIgnoreCase))
+    {
+      return CreateProfileLabels(transaction, pipe, "Pipe",
+        (partId, profileViewId) => Autodesk.Civil.DatabaseServices.PipeProfileLabel.Create(partId, profileViewId, 0.5, styleId), out skipped);
+    }
+
+    if (string.Equals(labelType, "plan", StringComparison.OrdinalIgnoreCase))
+    {
+      return new[] { Autodesk.Civil.DatabaseServices.PipeLabel.Create(pipe.ObjectId, 0.5, styleId) };
+    }
+
+    throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"Pipe labelType must be 'plan' or 'profile', not '{labelType}'.");
+  }
+
+  // Profile labels hang off the part's ProfileViewPart (the part as drawn in
+  // profile views), not the pipe or structure itself: passing the model part
+  // fails with "An ObjectId of type ProfileViewPart is expected". Civil 3D 2026
+  // keeps ONE ProfileViewPart per part, shared by every profile view that shows
+  // it, with placeholder extents ((0,0)-(1,0), seen live 2026-10-11 with two
+  // views), so views cannot be told apart by extents. Each profile view in
+  // GetProfileViewsDisplayingMe is therefore labelled with Part.ProfileViewPartId;
+  // when a view refuses it (Create checks that the ProfileViewPart belongs to the
+  // view, as it would in a release that keeps one per view), the part's other
+  // ProfileViewParts in model space are tried. A view that accepts none of them
+  // is skipped and counted.
+  private static IReadOnlyList<ObjectId> CreateProfileLabels(
+    Transaction transaction, Autodesk.Civil.DatabaseServices.Part part, string kind,
+    Func<ObjectId, ObjectId, ObjectId> create, out int skipped)
+  {
+    skipped = 0;
+    var profileViewIds = part.GetProfileViewsDisplayingMe();
+    if (profileViewIds.Count == 0)
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"{kind} '{part.Name}' is not drawn in any profile view, so it has no profile to label.");
+    }
+
+    var candidates = new List<ObjectId>();
+    if (!part.ProfileViewPartId.IsNull)
+    {
+      candidates.Add(part.ProfileViewPartId);
+    }
+
+    var scanned = false;
+    string? lastError = null;
+    var labelIds = new List<ObjectId>();
+    foreach (ObjectId profileViewId in profileViewIds)
+    {
+      var labelId = TryCreateProfileLabel(candidates, profileViewId, create, ref lastError);
+      if (labelId.IsNull && !scanned)
+      {
+        // Scanned only after an attempt failed, and finished (a list) before the
+        // next label is created: model space is never appended to mid-enumeration.
+        scanned = true;
+        var more = FindProfileViewParts(transaction, part).Where(id => !candidates.Contains(id)).ToList();
+        candidates.AddRange(more);
+        labelId = TryCreateProfileLabel(more, profileViewId, create, ref lastError);
+      }
+
+      if (labelId.IsNull)
+      {
+        skipped++;
+        continue;
+      }
+
+      labelIds.Add(labelId);
+    }
+
+    if (labelIds.Count == 0)
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", candidates.Count == 0
+        ? $"Civil 3D lists {profileViewIds.Count} profile view(s) displaying {kind.ToLowerInvariant()} '{part.Name}', but it has no profile view part, so no profile label was created."
+        : $"{kind} '{part.Name}' is drawn in {profileViewIds.Count} profile view(s), but Civil 3D accepted none of its {candidates.Count} profile view part(s) for them, so no profile label was created{(lastError == null ? "." : $" (last error: {lastError}).")}");
+    }
+
+    return labelIds;
+  }
+
+  private static ObjectId TryCreateProfileLabel(
+    IEnumerable<ObjectId> candidates, ObjectId profileViewId, Func<ObjectId, ObjectId, ObjectId> create, ref string? lastError)
+  {
+    foreach (var partId in candidates)
+    {
+      try
+      {
+        return create(partId, profileViewId);
+      }
+      catch (Exception exception) when (exception is not JsonRpcDispatchException)
+      {
+        lastError = exception.Message;
+      }
+    }
+
+    return ObjectId.Null;
+  }
+
+  // Every ProfileViewPart in model space that draws this part.
+  private static List<ObjectId> FindProfileViewParts(Transaction transaction, Autodesk.Civil.DatabaseServices.Part part)
+  {
+    var parts = new List<ObjectId>();
+    var modelSpace = (BlockTableRecord)transaction.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(part.Database), OpenMode.ForRead);
+    var partClass = Autodesk.AutoCAD.Runtime.RXObject.GetClass(typeof(Autodesk.Civil.DatabaseServices.ProfileViewPart));
+    foreach (ObjectId entityId in modelSpace)
+    {
+      if (entityId.ObjectClass.IsDerivedFrom(partClass)
+        && ((Autodesk.Civil.DatabaseServices.ProfileViewPart)transaction.GetObject(entityId, OpenMode.ForRead)).ModelPartId == part.ObjectId)
+      {
+        parts.Add(entityId);
+      }
+    }
+
+    return parts;
+  }
+
+  private static IReadOnlyList<ObjectId> CreateStructureLabels(Transaction transaction, Autodesk.Civil.DatabaseServices.Structure structure, ObjectId styleId, string labelType, out int skipped)
+  {
+    skipped = 0;
+    if (string.Equals(labelType, "profile", StringComparison.OrdinalIgnoreCase))
+    {
+      return CreateProfileLabels(transaction, structure, "Structure",
+        (partId, profileViewId) => Autodesk.Civil.DatabaseServices.StructureProfileLabel.Create(profileViewId, partId, styleId), out skipped);
+    }
+
+    if (string.Equals(labelType, "plan", StringComparison.OrdinalIgnoreCase))
+    {
+      return new[] { Autodesk.Civil.DatabaseServices.StructureLabel.Create(structure.ObjectId, styleId, structure.Position) };
+    }
+
+    throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"Structure labelType must be 'plan' or 'profile', not '{labelType}'.");
   }
 
   private static ObjectId CreateAlignmentStationLabel(
@@ -720,63 +917,6 @@ public static class LabelCommands
     return args;
   }
 
-  private static object?[]? BuildSingleObjectLabelArguments(Civil3DCompatibility.ParameterShape[] parameters, ObjectId objectId, ObjectId styleId)
-  {
-    var args = new object?[parameters.Length];
-    var objectIds = new Queue<ObjectId>(new[] { objectId, styleId });
-
-    for (var i = 0; i < parameters.Length; i++)
-    {
-      var parameterType = parameters[i].Type;
-
-      if (parameterType == typeof(ObjectId))
-      {
-        args[i] = objectIds.Count > 0 ? objectIds.Dequeue() : ObjectId.Null;
-        continue;
-      }
-
-      if (parameterType == typeof(Point2d))
-      {
-        args[i] = new Point2d(0.0, 0.0);
-        continue;
-      }
-
-      if (parameterType == typeof(Point3d))
-      {
-        args[i] = Point3d.Origin;
-        continue;
-      }
-
-      if (parameterType == typeof(double))
-      {
-        args[i] = 0.0;
-        continue;
-      }
-
-      if (parameterType == typeof(bool))
-      {
-        args[i] = false;
-        continue;
-      }
-
-      if (parameterType == typeof(int))
-      {
-        args[i] = 0;
-        continue;
-      }
-
-      if (parameterType == typeof(string))
-      {
-        args[i] = string.Empty;
-        continue;
-      }
-
-      return null;
-    }
-
-    return args;
-  }
-
   private static ObjectId ExtractCreatedObjectId(object? result, object?[] args)
   {
     if (result is ObjectId objectId && objectId != ObjectId.Null)
@@ -887,18 +1027,4 @@ public static class LabelCommands
     }
   }
 
-  private static void ApplyObjectIdProperty(object target, ObjectId objectId, params string[] propertyNames)
-  {
-    if (objectId == ObjectId.Null)
-    {
-      throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", "Requested label style or label set was not found.");
-    }
-
-    foreach (var propertyName in propertyNames)
-    {
-      if (Civil3DCompatibility.TrySetProperty(target, propertyName, objectId)) return;
-    }
-
-    throw new JsonRpcDispatchException("CIVIL3D.TRANSACTION_FAILED", $"Object '{CivilObjectUtils.GetName(target)}' does not expose a writable label set property.");
-  }
 }

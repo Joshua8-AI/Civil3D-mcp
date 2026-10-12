@@ -99,6 +99,18 @@
 
 ### Fixed
 
+- `label_add` (`civil3d_standards` / `civil3d_label`):
+  - Alignment `label_set` imports the named label set (it replaces the
+    alignment's label groups) and returns `labelGroups`; `curves` labels every
+    arc, including the arcs inside compound curves such as spiral-curve-spiral.
+  - Pipe and structure `plan` and `profile` labels are real labels with styles
+    from the pipe/structure label styles; `profile` puts one label in every
+    profile view that shows the part (Civil 3D keeps one profile view part per
+    part, shared by those views). Responses list every label: `handle`,
+    `handles`, `created` (a count; it was `true` for pipes), `skipped`.
+  - An unknown style name lists the available ones; profile `label_set` says
+    the .NET API cannot set it instead of failing obscurely.
+  - `scripts/live-label-smoke.mjs` checks all of it in a running Civil 3D.
 - Every plugin call hung until Civil 3D restarted once any COM client had run
   a command with `SendCommand`. Verified on 2027 with only this plugin loaded:
   in a disconnected Windows session the first such command (from PowerShell,
