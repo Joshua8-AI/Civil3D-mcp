@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- A path outside the plugin's file roots now names the allowed roots and the
+  variables that add one, instead of only "outside the configured roots".
+
 - Style lookups by name never matched on Civil 3D 2027, so a requested style
   was silently replaced by the drawing's first one: `create_layout` with style
   "Design Profile" got "Existing Ground Profile", and `view_create` with style
@@ -57,6 +60,22 @@
 - `civil3d_profile get` reported symmetric parabolas as `asymmetric_parabola`
   ("parabolasymmetric" contains "asymmetric"); they are now
   `symmetric_parabola`. The response schema still accepts the old `parabola`.
+
+### Added
+
+- `civil3d_style list|get` takes `profile_view`, `profile_view_band_set`,
+  `section_view` and `section_view_band_set`, so the names that
+  `civil3d_profile view_create`/`view_band_set` and the section view tools
+  accept can be listed.
+- `civil3d_profile view_update` (also `civil3d_profile_view_update`, plugin
+  `profileViewUpdate`): set an existing profile view's style, layer, station
+  range (`stationStart`/`stationEnd`, or `stationRange: "auto"`), elevation
+  range (`elevationMin`/`elevationMax`, or `elevationRange: "auto"`) and
+  vertical exaggeration. `view_create` takes the same range and exaggeration
+  fields. Vertical exaggeration is part of the profile view style, so it
+  changes every view using the style; the result lists them in
+  `styleSharedWith` and warns when there are others. Approval-gated like
+  `view_band_set`.
 
 ## v1.2.1 — 2026-07-14
 
