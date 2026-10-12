@@ -428,6 +428,12 @@ try {
   console.log(JSON.stringify({ status: "stopped", failures, results }, null, 2));
   process.exitCode = 1;
 } finally {
-  await client.close().catch(() => undefined);
-  await transport.close().catch(() => undefined);
+  // Closing the stdio transport can leave a promise that never settles once
+  // the server exits; Node would then end with code 13 (unsettled top-level
+  // await) over the real result, so bound it and exit explicitly.
+  await Promise.race([
+    client.close().catch(() => undefined),
+    new Promise((resolve) => setTimeout(resolve, 5000)),
+  ]);
 }
+process.exit(process.exitCode ?? 0);
