@@ -206,6 +206,12 @@ internal static class ScriptCompiler
     var compilation = CSharpCompilation.Create(assemblyName, new[] { tree }, references, options);
     var result = new ScriptCompileResult { TypeName = className, ReferenceCount = references.Count };
 
+    result.Errors.AddRange(FindLineDirectives(tree, source));
+    if (result.Errors.Count > 0)
+    {
+      return result;
+    }
+
     foreach (var diagnostic in compilation.GetDiagnostics())
     {
       AddDiagnostic(result, diagnostic);
@@ -332,6 +338,28 @@ internal static class ScriptCompiler
     "Set", "Reverse", "Join", "Split", "Extend", "Trim", "Promote", "Synchronize", "Lock", "Unlock",
     "Move", "Copy", "Clear", "Reset", "Extract",
   };
+
+  // A snippet's own #line directive would map the code after it away from
+  // "script", where the guard does not look (that is how it skips the
+  // wrapper), so refuse any inside the snippet's body. Ours sit outside it,
+  // and hoisted using lines cannot hold one.
+  private static IEnumerable<ScriptDiagnostic> FindLineDirectives(SyntaxTree tree, string source)
+  {
+    var bodyMarker = "#line 1 \"" + ScriptPath + "\"\n";
+    var bodyStart = source.IndexOf(bodyMarker, source.IndexOf("public override object Run()", StringComparison.Ordinal), StringComparison.Ordinal) + bodyMarker.Length;
+    var bodyEnd = source.LastIndexOf("#line default\n#pragma warning disable CS0162", StringComparison.Ordinal);
+    var firstBodyLine = tree.GetText().Lines.GetLinePosition(bodyStart).Line;
+    foreach (var trivia in tree.GetRoot().DescendantTrivia())
+    {
+      if ((trivia.IsKind(SyntaxKind.LineDirectiveTrivia) || trivia.IsKind(SyntaxKind.LineSpanDirectiveTrivia))
+          && trivia.SpanStart >= bodyStart && trivia.SpanStart < bodyEnd)
+      {
+        var position = tree.GetLineSpan(trivia.Span).StartLinePosition;
+        yield return new ScriptDiagnostic(position.Line - firstBodyLine + 1, position.Character + 1, GuardDiagnosticId,
+          "#line directives are not allowed in a snippet: they move code away from its script lines, past the guard.");
+      }
+    }
+  }
 
   private static IEnumerable<ScriptDiagnostic> FindGuardViolations(CSharpCompilation compilation, SyntaxTree tree, bool writeMode)
   {

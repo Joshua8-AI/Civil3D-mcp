@@ -225,10 +225,17 @@ public static class RunCodeCommands
         warnings.Add($"The script ran {outcome.RunMs / 1000.0:0.0} s, past its {timeoutSeconds} s budget: call Check() in long loops so the budget can stop it.");
       }
 
-      var files = RunCodeLog.ScriptFiles(runFolder).Select(file => (JsonNode)file).ToArray();
-      if (files.Length > 0)
+      try
       {
-        response["files"] = new JsonArray(files);
+        var files = RunCodeLog.ScriptFiles(runFolder).Select(file => (JsonNode)file).ToArray();
+        if (files.Length > 0)
+        {
+          response["files"] = new JsonArray(files);
+        }
+      }
+      catch (Exception exception)
+      {
+        warnings.Add($"The files the script wrote could not be listed ({exception.Message}); see {runFolder}.");
       }
 
       return response;
@@ -508,7 +515,20 @@ public static class RunCodeCommands
       return;
     }
 
-    response["outputFile"] = RunCodeLog.WriteText(runFolder, RunCodeLog.OutputFile, output);
+    // The run is over (a write already committed or rolled back): a file that
+    // cannot be saved (full disk, folder gone) must not turn the reply into an
+    // RPC error, or the caller could rerun a write that is already in the drawing.
+    var saved = true;
+    try
+    {
+      response["outputFile"] = RunCodeLog.WriteText(runFolder, RunCodeLog.OutputFile, output);
+    }
+    catch (Exception exception)
+    {
+      saved = false;
+      warnings.Add($"The full output could not be saved to a file ({exception.Message}); only its start is shown.");
+    }
+
     // Cut by characters, never between the two halves of a surrogate pair.
     var cut = Math.Min(output.Length, maxInlineBytes / 2);
     if (cut > 0 && char.IsHighSurrogate(output[cut - 1]))
@@ -516,7 +536,7 @@ public static class RunCodeCommands
       cut--;
     }
 
-    response["output"] = output[..cut] + "\n... (cut; full output in outputFile)";
+    response["output"] = output[..cut] + (saved ? "\n... (cut; full output in outputFile)" : "\n... (cut)");
   }
 
   private static void AddResult(JsonObject response, RunOutcome outcome, string runFolder, int maxInlineBytes)
@@ -540,7 +560,16 @@ public static class RunCodeCommands
     }
 
     response["result"] = null;
-    response["resultFile"] = RunCodeLog.WriteBytes(runFolder, RunCodeLog.ResultFile, outcome.Result);
+    try
+    {
+      response["resultFile"] = RunCodeLog.WriteBytes(runFolder, RunCodeLog.ResultFile, outcome.Result);
+    }
+    catch (Exception exception)
+    {
+      // As for the output: the run's outcome still goes back to the caller.
+      response["resultError"] = $"The return value ({outcome.Result.Length} bytes) could not be saved to a file ({exception.Message}); only the preview is shown.";
+    }
+
     response["resultPreview"] = Encoding.UTF8.GetString(outcome.Result, 0, Math.Min(outcome.Result.Length, PreviewChars)) + "...";
   }
 
