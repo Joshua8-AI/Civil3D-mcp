@@ -308,25 +308,39 @@ async function executeLegacyTool(toolName: string, parameters: Record<string, un
   }
 }
 
-// Tools that take another tool as parameters.toolName and can approve, preview
-// or run it (civil3d_docs through its orchestrate action).
-const TOOL_TARGETING_TOOLS = new Set([
-  "civil3d_request_approval",
-  "civil3d_preview_action",
-  "civil3d_orchestrate",
-  "civil3d_docs",
-]);
-
 /**
  * Without MCP_HTTP_TOKEN any local process, also one running as another
  * account, can call the bridge on loopback. Refuse the tools that run code with
- * the user's rights (and approving or previewing them) in that case.
+ * the user's rights in that case, also when a parameter only names one:
+ * approval, preview, orchestrate and docs take another tool as toolName, and
+ * orchestrate/docs nest (toolParameters.toolName, a request text) to any depth.
  */
-function unauthenticatedRefusal(toolName: string, parameters: Record<string, unknown>): string | undefined {
-  const target = TOOL_TARGETING_TOOLS.has(toolName) ? parameters.toolName : toolName;
-  if (typeof target !== "string" || !ALWAYS_GATED_TOOLS.has(target)) return undefined;
+function unauthenticatedRefusal(toolName: string, parameters: unknown): string | undefined {
+  const target = gatedToolNamedIn(toolName) ?? gatedToolNamedInValue(parameters);
+  if (!target) return undefined;
   return `${target} is not available over the HTTP bridge without authentication. ` +
     "Set MCP_HTTP_TOKEN for the server and send it as 'Authorization: Bearer <token>' or X-MCP-Token.";
+}
+
+function gatedToolNamedIn(text: string): string | undefined {
+  const lower = text.toLowerCase();
+  return [...ALWAYS_GATED_TOOLS].find((name) => lower.includes(name.toLowerCase()));
+}
+
+// Every string and key at any depth. Iterative, so a deeply nested body cannot
+// overflow the stack.
+function gatedToolNamedInValue(value: unknown): string | undefined {
+  const pending: unknown[] = [value];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (typeof current === "string") {
+      const named = gatedToolNamedIn(current);
+      if (named) return named;
+    } else if (current !== null && typeof current === "object") {
+      for (const [key, child] of Object.entries(current)) pending.push(key, child);
+    }
+  }
+  return undefined;
 }
 
 /**

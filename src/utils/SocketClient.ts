@@ -20,6 +20,18 @@ interface PendingRequest {
   timeout: NodeJS.Timeout;
 }
 
+/**
+ * The address to dial for a configured plugin host. The plugin listens on IPv4
+ * loopback only (RpcTcpServer binds IPAddress.Loopback), while Node resolves
+ * "localhost" (and an empty host) to ::1 first: any local account can listen on
+ * [::1] at the plugin's port and would receive the runCode token. So
+ * "localhost" is dialed as 127.0.0.1.
+ */
+export function pluginConnectHost(host: string): string {
+  const normalized = host.trim().toLowerCase();
+  return normalized === "" || normalized === "localhost" ? "127.0.0.1" : host;
+}
+
 export class Civil3DRpcError extends Error {
   constructor(
     message: string,
@@ -101,7 +113,7 @@ export class ApplicationClientConnection {
     }
 
     try {
-      this.socket.connect(this.port, this.host);
+      this.socket.connect({ port: this.port, host: pluginConnectHost(this.host) });
       return true;
     } catch (error) {
       log.error("Failed to connect", { host: this.host, port: this.port, error: String(error) });

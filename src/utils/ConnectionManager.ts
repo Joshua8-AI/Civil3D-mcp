@@ -4,7 +4,8 @@ import { currentAbortSignal } from "./requestContext.js";
 
 const log = createLogger("ConnectionManager");
 
-const CIVIL3D_HOST = process.env.CIVIL3D_HOST ?? "localhost";
+// IPv4 loopback, the only address the plugin binds (see pluginConnectHost).
+const CIVIL3D_HOST = process.env.CIVIL3D_HOST ?? "127.0.0.1";
 // This fork's plugin listens on 8757 (PluginRuntime.Port); upstream uses 8080.
 const CIVIL3D_PORT = parseInt(process.env.CIVIL3D_PORT ?? "8757", 10);
 const CONNECT_TIMEOUT_MS = parseInt(process.env.CIVIL3D_CONNECT_TIMEOUT ?? "5000", 10);
