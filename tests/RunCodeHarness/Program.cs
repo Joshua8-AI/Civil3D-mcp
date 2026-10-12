@@ -244,6 +244,18 @@ foreach (var write in new[] { false, true })
   Expect(HasError(top, ScriptCompiler.GuardDiagnosticId, 2), $"{(write ? "write" : "read")} mode refuses TopTransaction (the unwrapped run transaction)", top);
 }
 
+// A snippet's own #line would move the code after it out of "script", past the guard.
+foreach (var (label, snippet, line) in new[] {
+  ("#line default", "var x = 1;\n#line default\nDb.Ltscale = 2;\nreturn x;", 2),
+  ("#line to another file", "#line 1 \"other\"\nDb.Ltscale = 2;", 1),
+  ("#line hidden", "var x = 1;\nvar y = 2;\n#line hidden\nreturn x;", 3) })
+{
+  var r = Compile(snippet);
+  Expect(HasError(r, ScriptCompiler.GuardDiagnosticId, line), $"read mode refuses a snippet's own {label}", r);
+}
+Expect(Compile("var s = \"#line 5\";\nreturn s;").Succeeded, "a string that mentions #line compiles");
+Expect(Compile("using System.Text;\nvar sb = new StringBuilder();\nreturn sb.Length;").Succeeded, "hoisted using lines still compile next to the #line check");
+
 Expect(Compile("using var t = Db.TransactionManager.StartTransaction();\nt.Commit();", write: true).Succeeded, "write mode allows committing a transaction the snippet started");
 Expect(Compile("using (var t = Db.TransactionManager.StartTransaction())\n{\n  t.Commit();\n}", write: true).Succeeded, "write mode allows a nested transaction in a using statement");
 var bareTransaction = Compile("var t = Db.TransactionManager.StartTransaction();\nt.Commit();", write: true);
