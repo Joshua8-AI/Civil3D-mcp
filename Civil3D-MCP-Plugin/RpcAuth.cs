@@ -1,4 +1,6 @@
+using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json.Nodes;
 
@@ -7,10 +9,13 @@ namespace Civil3DMcpPlugin;
 /// <summary>
 /// Caller check for runCode, the one command that runs arbitrary code. The TCP
 /// port is loopback-only but open to every account and integrity level on the
-/// machine; the token file is not (%LOCALAPPDATA% is readable only by this
-/// Windows user, SYSTEM and administrators). The plugin instance that owns the
-/// port writes a new random token on every start; the MCP server reads it
-/// before each runCode and sends it as "authToken". Other commands are not
+/// machine; the token file is not: it gets a protected DACL that grants only
+/// this Windows user access, whatever %LOCALAPPDATA% passes down (another
+/// account, such as a sandbox group, may be allowed to read that folder). No
+/// mandatory label is set, so a low-integrity process of the same user can
+/// still read it. The plugin instance that owns the port writes a new random
+/// token on every start; the MCP server reads it before each runCode and
+/// sends it as "authToken". Other commands are not
 /// gated: none of them runs code, and older servers keep working with them.
 /// AutoCAD-free, so tests\RunCodeHarness checks it offline.
 /// </summary>
@@ -28,8 +33,9 @@ internal static class RpcAuth
     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Civil3DMcpPlugin", "rpc-token");
 
   // Called once the TCP server has bound the port. Writes the token through a
-  // temp file and a rename, so the server never reads half of one. On failure
-  // runCode is refused (with the reason) and every other command still works.
+  // private temp file and a rename, so the server never reads half of one. On
+  // failure (including the permissions) runCode is refused, with the reason,
+  // and every other command still works.
   internal static bool Issue()
   {
     var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
@@ -43,7 +49,8 @@ internal static class RpcAuth
       }
 
       Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-      File.WriteAllBytes(temp, Encoding.ASCII.GetBytes(token));
+      WritePrivateFile(temp, token);
+      // Same folder, so the rename keeps the file's own DACL.
       File.Move(temp, path, true);
     }
     catch (Exception exception)
@@ -73,6 +80,26 @@ internal static class RpcAuth
 
     PluginLog.Info("RpcAuth", $"Wrote the runCode token file {path}.");
     return true;
+  }
+
+  // Creates the file with its permissions already set (owner and full control
+  // for this user only, nothing inherited), so it is never readable by others,
+  // not even between creation and an ACL change. Throws on any failure.
+  private static void WritePrivateFile(string path, string token)
+  {
+    if (!OperatingSystem.IsWindows())
+    {
+      throw new PlatformNotSupportedException("the token file needs Windows file permissions");
+    }
+
+    using var identity = WindowsIdentity.GetCurrent();
+    var user = identity.User ?? throw new IOException("this account has no security identifier");
+    var security = new FileSecurity();
+    security.SetOwner(user);
+    security.SetAccessRuleProtection(true, false);
+    security.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl, AccessControlType.Allow));
+    using var stream = new FileInfo(path).Create(FileMode.CreateNew, FileSystemRights.FullControl, FileShare.None, 4096, FileOptions.None, security);
+    stream.Write(Encoding.ASCII.GetBytes(token));
   }
 
   // Called when the listener stops. Deletes the file only while it still holds

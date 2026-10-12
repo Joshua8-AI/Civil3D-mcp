@@ -204,9 +204,11 @@ public static class RunCodeCommands
           warnings.Add("The transaction was rolled back. Changes made outside Tr (database or system variables, files, Session) are not undone.");
         }
 
+        // The run aborts them through wrappers of its own; the script's wrappers
+        // stay armed and .NET ends them again later, on its finalizer thread.
         if (outcome.LeakedTransactions > 0)
         {
-          warnings.Add($"The script left {outcome.LeakedTransactions} transaction(s) open; they were aborted, with any changes made through them.");
+          warnings.Add($"The script left {outcome.LeakedTransactions} transaction(s) open; the run aborted them, with any changes made through them, but Civil 3D may crash later when .NET cleans them up: save the drawing and restart Civil 3D.");
         }
       }
       finally
@@ -448,6 +450,7 @@ public static class RunCodeCommands
   // top again (Commit only works on the top transaction). Returns false when
   // the run's transaction is no longer active: the script ended it some other
   // way than through Tr (a RunTransaction), for example via TopTransaction.
+  // A backstop: the guard allows a nested transaction only as a using resource.
   private static bool RestoreRunTransaction(Database database, Transaction run, RunOutcome outcome)
   {
     // Ended through the run's own object (a script can only reach it by

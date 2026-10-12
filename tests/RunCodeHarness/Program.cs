@@ -184,6 +184,8 @@ foreach (var (label, snippet) in new[] {
   ("a WinForms OpenFileDialog", "new System.Windows.Forms.OpenFileDialog().ShowDialog();"),
   ("a WPF OpenFileDialog", "new Microsoft.Win32.OpenFileDialog().ShowDialog();"),
   ("an AutoCAD OpenFileDialog", "new Autodesk.AutoCAD.Windows.OpenFileDialog(\"t\", null, \"dwg\", \"x\", Autodesk.AutoCAD.Windows.OpenFileDialog.OpenFileDialogFlags.NoUrls).ShowDialog();"),
+  ("an AutoCAD OpenFileDialog.ShowModal", "new Autodesk.AutoCAD.Windows.OpenFileDialog(\"t\", null, \"dwg\", \"x\", Autodesk.AutoCAD.Windows.OpenFileDialog.OpenFileDialogFlags.NoUrls).ShowModal();"),
+  ("an AutoCAD ColorDialog.ShowModal", "new Autodesk.AutoCAD.Windows.ColorDialog().ShowModal();"),
   ("TaskDialog", "System.Windows.Forms.TaskDialog.ShowDialog(new System.Windows.Forms.TaskDialogPage());"),
   ("WinForms Application.Run", "System.Windows.Forms.Application.Run(new System.Windows.Forms.Form());"),
   ("WPF Application.Run", "new System.Windows.Application().Run();"),
@@ -195,6 +197,36 @@ foreach (var (label, snippet) in new[] {
 {
   var r = Compile(snippet, write: true);
   Expect(HasError(r, ScriptCompiler.GuardDiagnosticId, 1), $"both modes refuse {label}", r);
+}
+
+// AdWindows.dll (Autodesk.Windows.TaskDialog, a modal task dialog) is not among the
+// reference assemblies: a stand-in with the same full name checks the rule, which
+// matches by type and method name.
+var standIn = Path.Combine(Path.GetTempPath(), $"RunCodeHarness-AdWindows-{Guid.NewGuid():N}.dll");
+using (var standInImage = new MemoryStream())
+{
+  var standInBuild = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create("AdWindows",
+      new[] { Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText("namespace Autodesk.Windows { public class TaskDialog { public string MainInstruction { get; set; } public void Show() { } } }") },
+      new[] { Microsoft.CodeAnalysis.MetadataReference.CreateFromFile(typeof(object).Assembly.Location) },
+      new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary))
+    .Emit(standInImage);
+  File.WriteAllBytes(standIn, standInImage.ToArray());
+  Expect(standInBuild.Success, "the AdWindows TaskDialog stand-in builds");
+}
+
+foreach (var write in new[] { false, true })
+{
+  var r = ScriptCompiler.Compile("new Autodesk.Windows.TaskDialog { MainInstruction = \"Continue?\" }.Show();", $"HarnessRun_{++run}", references.Append(standIn), write);
+  Expect(HasError(r, ScriptCompiler.GuardDiagnosticId, 1), $"{(write ? "write" : "read")} mode refuses AdWindows TaskDialog.Show", r);
+}
+
+try
+{
+  File.Delete(standIn);
+}
+catch (Exception)
+{
+  // Best effort: the compiler may still hold the file open.
 }
 
 var subscribe = Compile("Db.ObjectModified += (s, e) => { };", write: true);
@@ -213,6 +245,33 @@ foreach (var write in new[] { false, true })
 }
 
 Expect(Compile("using var t = Db.TransactionManager.StartTransaction();\nt.Commit();", write: true).Succeeded, "write mode allows committing a transaction the snippet started");
+Expect(Compile("using (var t = Db.TransactionManager.StartTransaction())\n{\n  t.Commit();\n}", write: true).Succeeded, "write mode allows a nested transaction in a using statement");
+var bareTransaction = Compile("var t = Db.TransactionManager.StartTransaction();\nt.Commit();", write: true);
+Expect(HasError(bareTransaction, ScriptCompiler.GuardDiagnosticId, 1), "write mode refuses a nested transaction outside a using (left open, it crashes Civil 3D later)", bareTransaction);
+var bareOpenClose = Compile("var t = Db.TransactionManager.StartOpenCloseTransaction();\nreturn 1;");
+Expect(HasError(bareOpenClose, ScriptCompiler.GuardDiagnosticId, 1), "read mode refuses an open-close transaction outside a using", bareOpenClose);
+Expect(Compile("using (var t = Db.TransactionManager.StartOpenCloseTransaction()) { }\nreturn 1;").Succeeded, "read mode allows an open-close transaction in a using statement");
+
+// The run disposes OpenSide's databases (after the transaction holding their objects).
+foreach (var write in new[] { false, true })
+{
+  var mode = write ? "write" : "read";
+  foreach (var (label, snippet, line) in new[] {
+    ("using var over OpenSide in a loop", "foreach (var p in new[] { \"a.dwg\" }) { using var side = OpenSide(p); }", 1),
+    ("a using statement over OpenSide", "using (var side = OpenSide(\"a.dwg\")) { }", 1),
+    ("using (OpenSide(...))", "using (OpenSide(\"a.dwg\")) { }", 1),
+    ("Dispose() on a side database", "var side = OpenSide(\"a.dwg\");\nside.Dispose();", 2),
+    ("OpenSide(...).Dispose()", "OpenSide(\"a.dwg\").Dispose();", 1),
+    ("a using over a side-database local", "var side = OpenSide(\"a.dwg\");\nusing (side) { }", 2) })
+  {
+    var r = Compile(snippet, write);
+    Expect(HasError(r, ScriptCompiler.GuardDiagnosticId, line) && r.Errors.Any(error => error.Message.Contains("the run disposes side databases when it ends")),
+      $"{mode} mode refuses {label}", r);
+  }
+
+  var sideRead = Compile("var side = OpenSide(\"a.dwg\");\nvar ms = new MemoryStream();\nms.Dispose();\nreturn ModelSpace<Curve>(side).Count();", write);
+  Expect(sideRead.Succeeded, $"{mode} mode allows reading a side database and disposing other objects", sideRead);
+}
 
 var writeOpenClose = Compile("using var t = Db.TransactionManager.StartOpenCloseTransaction();\nreturn 1;", write: true);
 Expect(HasError(writeOpenClose, ScriptCompiler.GuardDiagnosticId, 1), "write mode refuses open-close transactions (they commit outside Tr)", writeOpenClose);
