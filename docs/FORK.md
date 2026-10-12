@@ -94,10 +94,12 @@ the bundle and answers Load Once at each start. The installer refuses before cha
 Civil 3D holds the bundle or a changed build: close Civil 3D completely and run it again.
 
 **Update the plugin and the Node server together.** `civil3d_run_code` sends the plugin's
-per-session token (`%LOCALAPPDATA%\Civil3DMcpPlugin\rpc-token`), so a server older than the plugin gets
+per-session token (`%LOCALAPPDATA%\Civil3DMcpPlugin\rpc-token`, private to the user, sent only to
+127.0.0.1), so a server older than the plugin gets
 `CIVIL3D.AUTH_REQUIRED` on that tool (other tools keep working). After a pull: install the plugin
 (Civil 3D closed), and the Claude launcher (`scripts\claude-bootstrap-and-run.ps1`) rebuilds the server
-at its next start; run `npm run build` yourself if you start the server another way.
+at its next start (`npm install --no-save` when the package files changed, so the clone stays clean for
+`git pull`); run `npm run build` yourself if you start the server another way.
 
 The plugin project targets .NET 8 (Civil 3D 2026). For a quick compile check of a `fix/` branch
 against the 2027 references:

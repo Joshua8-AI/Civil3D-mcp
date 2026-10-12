@@ -21,22 +21,30 @@
     `C3DMCPHOP`: committed as one undo step, rolled back on an exception or
     timeout (changes outside the transaction, such as database or system
     variables, files and `Session`, are not). Both refuse Editor prompts,
-    modal windows and message loops (any `ShowDialog`, `MessageBox`,
-    `InputBox`, `Application.Run`, `Dispatcher.PushFrame`), event
-    subscriptions and `TopTransaction`; read mode counts `++`/`--`, compound
+    modal windows and message loops (any `ShowDialog` or `ShowModal`,
+    `TaskDialog.Show`, `MessageBox`, `InputBox`, `Application.Run`,
+    `Dispatcher.PushFrame`), event subscriptions, `TopTransaction` and a
+    `using`/`Dispose()` on an `OpenSide` database (the run disposes it, and
+    the script gets a non-owning wrapper either way); a nested transaction is
+    allowed only as the resource of a `using`, so it ends on every path; read mode counts `++`/`--`, compound
     assignment and deconstruction as setting a drawing property, and refuses a
     numeric `OpenMode` other than `ForRead`.
   - The script gets `Tr` and `TransactionFor(...)` as wrappers the run owns:
     `Commit()`/`Abort()` throw with a message, `Dispose()`/`using` do nothing,
     so `var tx = Tr; tx.Commit();` can neither commit behind the run's back
-    nor leave a disposed transaction that crashes the next call. Write
-    responses report `committed` as `true`, `false` or `"unknown"`.
+    nor leave a disposed transaction that crashes the next call; wrappers are
+    detached when the run ends, so one kept in `Session` throws instead of
+    reaching freed memory. Write responses report `committed` as `true`,
+    `false` or `"unknown"`.
   - The plugin refuses `runCode` without this session's token
     (`%LOCALAPPDATA%\Civil3DMcpPlugin\rpc-token`, written when the plugin
-    starts listening, deleted when it stops; other methods are not gated): the
-    MCP server reads and sends it, so server and plugin must come from the same
-    build. The HTTP bridge refuses the tool (and approving, previewing or
-    orchestrating it) unless `MCP_HTTP_TOKEN` is set.
+    starts listening, deleted when it stops, private to the user; other
+    methods are not gated): the MCP server reads it and sends it only to
+    `127.0.0.1` (the default `CIVIL3D_HOST` is now `127.0.0.1`, and `localhost`
+    is dialled as `127.0.0.1`, so a listener on `[::1]:8757` cannot receive
+    it). Server and plugin must come from the same build. Without
+    `MCP_HTTP_TOKEN`, the HTTP bridge refuses any request that names the tool
+    anywhere in its parameters.
   - A run either starts with its full budget or not at all: one that cannot
     start within 30 s because Civil 3D is busy fails with `CIVIL3D.HOST_BUSY`
     and changes nothing. The MCP call waits for the budget plus 60 s, and a
@@ -68,21 +76,26 @@
   the bundle; `-Uninstall` reverses. The plugin then loads when a drawing opens.
   An `acaddoc.lsp` further down the support path, which the new file would
   shadow, is loaded first (so its `S::STARTUP` is chained, not lost) and stays
-  chained when the installer runs again. Every lock (a changed build, the old
+  chained when the installer runs again, also after user code was added to the
+  file or while that file is unreachable (only `-Uninstall` drops it, with a
+  warning when user code keeps the file). Every lock (a changed build, the old
   bundle) is checked before anything is changed; `-Uninstall` leaves
   `acaddoc.lsp` files without our block untouched; ANSI files keep their
   encoding under PowerShell 7 too.
 - `install-bundle.ps1` no longer claims the bundle folder is trusted: Civil 3D
   2026 prompts for it at every start (answer Load Once).
-- `claude-bootstrap-and-run.ps1` runs `npm install` when `package.json` or
+- `claude-bootstrap-and-run.ps1` runs `npm install --no-save` (the committed
+  `package-lock.json` stays as it is) when `package.json` or
   `package-lock.json` changed since the last install, and rebuilds when any
   build input changed (source files, including deletions and renames, the
   package files, `tsconfig.json`, the copied assets), not only when there is no
   build: after a `git pull`, new tools appear without a manual build. A failed
   or interrupted build is rebuilt at the next start instead of running half a
-  build. npm output goes to `%TEMP%\civil3d-mcp-bootstrap.log` (its tail to
-  stderr on failure), never to stdout, and an npm notice on stderr no longer
-  stops the start under Windows PowerShell 5.1.
+  build. Concurrent starts of one clone take turns through a named mutex and
+  reuse the first one's install and build; a start with nothing to do never
+  waits. npm output goes to `%TEMP%\civil3d-mcp-bootstrap-<clone key>.log`
+  (its tail to stderr on failure), never to stdout, and an npm notice on
+  stderr no longer stops the start under Windows PowerShell 5.1.
 
 ### Fixed
 

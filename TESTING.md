@@ -590,18 +590,25 @@ Review fixes (Codex review of PRs #5/#6, verified finding by finding; 2026-10-11
 
 | check | command | result |
 |---|---|---|
-| Node unit tests | `npx vitest run` | 539 passed / 45 files (new: `socket_client_limits`, `plugin_auth`, `connection_manager`, `powershell_scripts`; extended `run_code_domain`, `http_bridge`, `security_boundary`) |
+| Node unit tests | `npx vitest run` | 558 passed / 46 files (new: `socket_client_limits`, `plugin_auth`, `connection_manager`, `powershell_scripts`, `http_bridge_nesting`; extended `run_code_domain`, `http_bridge`, `socket_client`, `security_boundary`) |
 | Generated tool reference | `npm run docs:check` | current (210 entries) |
 | Plugin, 2026 refs (net8) and 2027 refs (net10) | `dotnet build` as above | 0 warnings, 0 errors |
-| Compiler and runtime harness, net8 and net10 | `npm run test:run-code-compiler`, `-f net10.0` | 89/89 pass on both |
-| Installer check, Windows PowerShell 5.1 | `powershell -File tests\powershell\install-trusted.check.ps1` | 42/42 (9 fail on the old installer) |
+| Compiler and runtime harness, net8 and net10 | `npm run test:run-code-compiler`, `-f net10.0` | 114/114 pass on both |
+| Installer check, Windows PowerShell 5.1 | `powershell -File tests\powershell\install-trusted.check.ps1` | 55/55 (the new checks fail on the old installer) |
+| Launcher (fake npm/node in a temp copy) | `npx vitest run tests/powershell_scripts.test.ts` | 8/8: install before build when the lock changes, `--no-save` keeps the lock, no npm call when fresh, two concurrent starts give one build and both start node, a held lock is waited for only when a build is needed |
 
 New harness checks: read mode refuses `++`/`--`, compound, deconstruction and parenthesized
 setters on host properties and numeric `OpenMode` constants, and still allows reads in tuples and
 `++` on locals and in-memory entities; both modes refuse `ShowDialog` (WinForms, WPF, AutoCAD
 dialogs), `TaskDialog`, WinForms and WPF `Application.Run`, `Dispatcher.PushFrame`/`Run`, VB
-`InputBox`/`MsgBox`, `Editor.DoPrompt` and `TopTransaction`; `RunCodeOutput` caps one oversized
-`Log`; `RpcAuth` issues, accepts, refuses and revokes the token. The new guard checks fail on the old
+`InputBox`/`MsgBox`, `Editor.DoPrompt`, `ShowModal` (AutoCAD `OpenFileDialog`, `ColorDialog`),
+`TaskDialog.Show` (a stand-in type: AdWindows is not in the references), `TopTransaction`, a bare
+nested `StartTransaction`/`StartOpenCloseTransaction` (the `using` forms compile) and `using`/`Dispose`
+on an `OpenSide` database; `RunCodeOutput` caps one oversized `Log`; `RpcAuth` issues, accepts, refuses
+and revokes the token, and the token file has a protected access list with only the current user
+(also when it replaces a file with inherited permissions). The Node client reaches a plugin on
+127.0.0.1 and never a decoy on `[::1]` when configured with `localhost`; the bridge refuses nested
+run_code requests without a token, and routes them with one. The new guard checks fail on the old
 compiler (24 of them) and pass now. pwsh is not installed here, so the PowerShell 7 encoding path is
 untested.
 
@@ -631,6 +638,11 @@ Live checklist (kept for 2027 and later changes):
   Tr"), `committed: false`, nothing added; write inside `using var tx = Tr;` → `ok`, one UNDO
   removes it.
 - Read mode refuses `Db.Ltscale++` (`rejected`).
+- `icacls %LOCALAPPDATA%\Civil3DMcpPlugin\rpc-token` shows only the user, `(F)`.
+- A database from `OpenSide` kept in `Session`: the next run's `TransactionFor` on it gives
+  `runtime_error`, and Civil 3D stays up; `Tr` kept in `Session` and used later throws, no crash.
+- Write: `using var t = Db.TransactionManager.StartTransaction();` with `t.Commit()` gives `ok`; the
+  bare form gives `rejected`.
 - Repeat the read and write cases on Civil 3D 2027 (Luis) and note which Roslyn
   copy loaded there.
 - `install-bundle.ps1` copies `Contents\roslyn\` (2 DLLs).

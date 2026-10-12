@@ -160,6 +160,19 @@ try {
     record("using on Tr does nothing: Tr still works after it", response.status === "ok" && typeof response.result === "string", { status: response.status, result: response.result, error: response.error });
   });
 
+  await check("a Tr kept in Session throws in a later run (no crash)", async () => {
+    await run({ code: "Session[\"smoke-tr\"] = Tr;\nreturn 1;" });
+    const later = await run({ code: "return ((Transaction)Session[\"smoke-tr\"]).NumberOfOpenedObjects;" });
+    const after = await run({ code: "Session.TryRemove(\"smoke-tr\", out _);\nreturn 7;" });
+    record("a Tr kept in Session throws in a later run (no crash)", later.status === "runtime_error" && after.status === "ok" && after.result === 7,
+      { later: later.status, error: later.error?.message, after: after.status });
+  });
+
+  await check("read: a nested open-close transaction in a using works", async () => {
+    const response = await run({ code: "using var t = Db.TransactionManager.StartOpenCloseTransaction();\nvar bt = (BlockTable)t.GetObject(Db.BlockTableId, OpenMode.ForRead);\nreturn bt.Has(BlockTableRecord.ModelSpace);" });
+    record("read: a nested open-close transaction in a using works", response.status === "ok" && response.result === true, { status: response.status, error: response.error });
+  });
+
   await check("the plugin wrote this session's rpc-token", async () => {
     const path = pluginTokenPath();
     const token = existsSync(path) ? readFileSync(path, "utf8").trim() : "";
@@ -255,6 +268,13 @@ try {
       const after = await run({ code: "return HostApplicationServices.WorkingDatabase == Db;" });
       record("the working database is restored after a failing run", failing.status === "runtime_error" && after.status === "ok" && after.result === true, { failing: failing.status, restored: after.result });
     });
+    await check("a side database kept in Session throws in a later run (no crash)", async () => {
+      await run({ code: "var side = OpenSide((string)Args[\"dwg\"]);\nSession[\"smoke-side\"] = side;\nreturn ModelSpace<Entity>(side).Take(10).Count();", args: { dwg: sidePath } });
+      const later = await run({ code: "return TransactionFor((Database)Session[\"smoke-side\"]).NumberOfOpenedObjects;" });
+      const after = await run({ code: "Session.TryRemove(\"smoke-side\", out _);\nreturn 7;" });
+      record("a side database kept in Session throws in a later run (no crash)", later.status === "runtime_error" && after.status === "ok" && after.result === 7,
+        { later: later.status, error: later.error?.message, after: after.status });
+    });
   } else {
     record("side database: skipped (no --side)", true);
   }
@@ -348,6 +368,28 @@ try {
     record("write: Commit through an alias of Tr is refused and rolled back",
       aliased.status === "runtime_error" && aliased.committed === false && /owns Tr/.test(aliased.error?.message ?? "") && after.result === 0,
       { status: aliased.status, committed: aliased.committed, error: aliased.error?.message, after: after.result });
+  });
+
+  await check("write: a nested transaction in a using commits with the run", async () => {
+    const nested = await run({
+      mode: "write",
+      args: { tag: `${tag}-NESTED` },
+      code: [
+        "using (var t = Db.TransactionManager.StartTransaction())",
+        "{",
+        "  var ms = (BlockTableRecord)t.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(Db), OpenMode.ForWrite);",
+        "  var text = new DBText { TextString = (string)Args[\"tag\"], Position = new Point3d(-1e6, -1e6, 0), Height = 1 };",
+        "  ms.AppendEntity(text);",
+        "  t.AddNewlyCreatedDBObject(text, true);",
+        "  t.Commit();",
+        "}",
+        "throw new InvalidOperationException(\"roll back the outer run\");",
+      ].join("\n"),
+    });
+    const after = await run({ code: countTagged, args: { tag: `${tag}-NESTED` } });
+    // The nested commit lands in the run's transaction, so the run's rollback removes it too.
+    record("write: a nested transaction in a using commits with the run", nested.status === "runtime_error" && after.result === 0,
+      { status: nested.status, error: nested.error?.message, after: after.result, warnings: nested.warnings });
   });
 
   await check("write: using var tx = Tr commits as usual, one undo removes it", async () => {
