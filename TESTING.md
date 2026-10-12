@@ -647,6 +647,13 @@ Live checklist (kept for 2027 and later changes):
   copy loaded there.
 - `install-bundle.ps1` copies `Contents\roslyn\` (2 DLLs).
 
+Live, Civil 3D 2026, 2026-10-11, after both review rounds (the trusted install of the merged
+branches, cold start through `Start-Civil3D.ps1` in 23-27 s with no prompt):
+`node scripts/live-run-code-smoke.mjs --side <10 MB background> --expect-drawing RUNCODE-SMOKE`
+**32/32 passed**, exit 0 (the token file is `HOMEOFFICE\Jorge:(F)` only; `HOST_BUSY` after a
+9-10 s wait; the background sampled into 1,516,406 points in 0.94-1.19 s). Opening every block table
+record with `Open<T>`, 118 of 167 from an attached xref, works.
+
 ## Deploy-script regression checks
 
 - `install-bundle.ps1` derives `SeriesMin/Max` from the build's target framework
