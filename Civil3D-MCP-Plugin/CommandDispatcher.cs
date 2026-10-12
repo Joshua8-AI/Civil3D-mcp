@@ -191,6 +191,8 @@ public static class CommandDispatcher
       "compareDrawings" => CompareCommands.CompareDrawingsAsync(parameters),
       "writeDrawingSnapshot" => CompareCommands.WriteDrawingSnapshotAsync(parameters),
       "compareDrawingSnapshot" => CompareCommands.CompareDrawingSnapshotAsync(parameters),
+      // In-process C# (approval-gated in the MCP server)
+      "runCode" => RunCodeCommands.RunCodeAsync(parameters),
       // Point groups
       "createPointGroup" => PointGroupCommands.CreatePointGroupAsync(parameters),
       "updatePointGroup" => PointGroupCommands.UpdatePointGroupAsync(parameters),

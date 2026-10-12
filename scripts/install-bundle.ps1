@@ -6,10 +6,12 @@
   The APPLOAD Startup Suite refuses folders that are not in TRUSTEDPATHS when
   SECURELOAD=1, which is the default and which reports failure only as a bare
   "Error" dialog. Bundles under ApplicationPlugins are Autodesk's supported
-  deployment path and are implicitly trusted, so this sidesteps both TRUSTEDPATHS
-  and the Startup Suite.
+  deployment path and load at startup without TRUSTEDPATHS or the Startup Suite.
 
-  Installs per-user under %APPDATA%, so no elevation is required.
+  Installs per-user under %APPDATA%, so no elevation is required. That folder is
+  not a trusted location: Civil 3D 2026 shows "Security - Unsigned Executable
+  File" for Civil3DMcpPlugin.dll at every start (verified 2026-10-11); answer
+  Load Once.
 
 .PARAMETER Uninstall
   Remove the bundle instead of installing it.
@@ -97,6 +99,20 @@ foreach ($f in Get-ChildItem $SourceDir -File) {
   $copied++
 }
 
+# civil3d_run_code's fallback C# compiler: loaded only when Civil 3D has no
+# Microsoft.CodeAnalysis of its own (RoslynResolver in RunCodeCommands.cs).
+$roslyn = Join-Path $SourceDir "roslyn"
+if (Test-Path $roslyn) {
+  $roslynTarget = Join-Path $contents "roslyn"
+  New-Item -ItemType Directory -Path $roslynTarget -Force | Out-Null
+  foreach ($f in Get-ChildItem $roslyn -File -Filter *.dll) {
+    Copy-Item $f.FullName -Destination (Join-Path $roslynTarget $f.Name) -Force
+    $copied++
+  }
+} else {
+  Write-Warning "No roslyn\ folder in '$SourceDir': civil3d_run_code will work only if Civil 3D ships its own C# compiler."
+}
+
 $appVersion = (Get-Item $dll).VersionInfo.FileVersion
 if (-not $appVersion) { $appVersion = "1.0.0.0" }
 
@@ -133,6 +149,6 @@ Write-Host "Installed bundle: $bundleDir"
 Write-Host "  PackageContents.xml  (AppVersion $appVersion)"
 Write-Host "  Contents\            ($copied file(s))"
 Write-Host ""
-Write-Host "Close Civil 3D COMPLETELY and reopen it. The plugin auto-loads;"
-Write-Host "no NETLOAD, no Startup Suite, no TRUSTEDPATHS entry needed."
+Write-Host "Close Civil 3D COMPLETELY and reopen it. The plugin auto-loads (no NETLOAD,"
+Write-Host "no Startup Suite); answer Load Once if Civil 3D asks about Civil3DMcpPlugin.dll."
 Write-Host "Verify with C3DMCPSTART (echoes the port)."

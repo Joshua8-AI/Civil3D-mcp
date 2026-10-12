@@ -83,6 +83,24 @@ npm ci; npm test                            # TypeScript tests
 git push myfork civil3d-2027
 ```
 
+Jorge's machine installs from a trusted folder instead of the bundle (no security prompt at each
+start): close Civil 3D, then
+`.\scripts\install-trusted.ps1 -SourceDir Civil3D-MCP-Plugin\bin\Release\net8.0-windows` (2026; the
+net10.0-windows output for 2027). It copies the build to `C:\CAD-Tools\plugins\Civil3DMcp\R<series>\`
+(under `TRUSTEDPATHS` there), loads it from a marked block in `acaddoc.lsp` and removes the bundle; the
+plugin then loads when a drawing opens. `C:\CAD-Tools\core\tools\Start-Civil3D.ps1` starts Civil 3D (also
+for an agent) and opens a drawing so the plugin comes up. A machine without that trusted folder keeps
+the bundle and answers Load Once at each start. The installer refuses before changing anything while
+Civil 3D holds the bundle or a changed build: close Civil 3D completely and run it again.
+
+**Update the plugin and the Node server together.** `civil3d_run_code` sends the plugin's
+per-session token (`%LOCALAPPDATA%\Civil3DMcpPlugin\rpc-token`, private to the user, sent only to
+127.0.0.1), so a server older than the plugin gets
+`CIVIL3D.AUTH_REQUIRED` on that tool (other tools keep working). After a pull: install the plugin
+(Civil 3D closed), and the Claude launcher (`scripts\claude-bootstrap-and-run.ps1`) rebuilds the server
+at its next start (`npm install --no-save` when the package files changed, so the clone stays clean for
+`git pull`); run `npm run build` yourself if you start the server another way.
+
 The plugin project targets .NET 8 (Civil 3D 2026). For a quick compile check of a `fix/` branch
 against the 2027 references:
 `dotnet build Civil3D-MCP-Plugin\Civil3DMcpPlugin.csproj -c Release --restore /p:Civil3DReferencesPath=<C_References> /p:TargetFramework=net10.0-windows`.
