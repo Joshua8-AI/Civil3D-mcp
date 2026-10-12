@@ -6,9 +6,14 @@ $buildEntryPath = Join-Path $repoRoot "build/index.js"
 $npmCommand = "npm.cmd"
 $nodeCommand = "node"
 
+# One key per clone (its full path, case-insensitive) names the install/build lock and the npm log, so
+# launches of one clone take turns and launches of different clones never share a log.
+$repoKey = -join ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($repoRoot.ToUpperInvariant())) |
+  Select-Object -First 8 | ForEach-Object { $_.ToString("x2") })
+$lockName = "Local\civil3d-mcp-bootstrap-$repoKey"
 # stdout carries the MCP protocol, so only node may write to it: npm output goes to this log (started
 # afresh by each launch that runs npm), and on failure its last lines go to stderr.
-$logPath = Join-Path $env:TEMP "civil3d-mcp-bootstrap.log"
+$logPath = Join-Path $env:TEMP "civil3d-mcp-bootstrap-$repoKey.log"
 $logStarted = $false
 # Stamps written only after a successful install or build. The build stamp sits in build\, which the
 # build's prebuild step deletes first, so a failed or killed build leaves none and the next launch builds
@@ -67,22 +72,50 @@ function Get-BuildInputs {
 }
 
 # Install when there are no dependencies yet or package.json / package-lock.json changed since the last
-# install (a pull that adds or bumps one). The hash is taken after the install, which may rewrite the lock.
-if (-not (Test-Path $nodeModulesPath) -or (Read-Stamp $depsStampPath) -cne (Get-DependencyHash)) {
-  if ((Invoke-NpmQuiet install --no-fund --no-audit --prefix $repoRoot) -ne 0) {
-    Stop-Bootstrap "Failed to install npm dependencies for civil3d-mcp"
-  }
-  Write-Stamp $depsStampPath (Get-DependencyHash)
+# install (a pull that adds or bumps one).
+function Test-InstallNeeded([string] $Hash) {
+  -not (Test-Path -LiteralPath $nodeModulesPath) -or (Read-Stamp $depsStampPath) -cne $Hash
 }
 
 # Build when there is no build yet or a build input changed since the last successful build (after a git
 # pull, new tools such as civil3d_run_code appear without a manual npm run build).
-$buildInputs = Get-BuildInputs
-if (-not (Test-Path $buildEntryPath) -or (Read-Stamp $buildStampPath) -cne $buildInputs) {
-  if ((Invoke-NpmQuiet run build --prefix $repoRoot) -ne 0) {
-    Stop-Bootstrap "Failed to build civil3d-mcp"
+function Test-BuildNeeded([string] $Snapshot) {
+  -not (Test-Path -LiteralPath $buildEntryPath) -or (Read-Stamp $buildStampPath) -cne $Snapshot
+}
+
+# With fresh stamps the launch goes straight to node. Otherwise launches of this clone take turns (several
+# sessions starting their servers at once after a pull): the lock holder installs and builds, and the others
+# check the stamps again once they hold the lock, so they find the work done instead of building again.
+if ((Test-InstallNeeded (Get-DependencyHash)) -or (Test-BuildNeeded (Get-BuildInputs))) {
+  $lock = New-Object Threading.Mutex($false, $lockName)
+  $locked = $false
+  try {
+    # A launcher killed while holding the lock leaves it abandoned; the stamps say what it finished.
+    try { $locked = $lock.WaitOne([TimeSpan]::FromMinutes(10)) } catch [Threading.AbandonedMutexException] { $locked = $true }
+    if (-not $locked) { Stop-Bootstrap "Timed out after 10 minutes waiting for another civil3d-mcp launcher to install or build" }
+
+    # --no-save: npm would otherwise rewrite the tracked package-lock.json (a dirty clone that blocks the
+    # next pull). The stamp is the hash of the committed files, taken before the install.
+    $depHash = Get-DependencyHash
+    if (Test-InstallNeeded $depHash) {
+      if ((Invoke-NpmQuiet install --no-save --no-fund --no-audit --prefix $repoRoot) -ne 0) {
+        Stop-Bootstrap "Failed to install npm dependencies for civil3d-mcp"
+      }
+      Write-Stamp $depsStampPath $depHash
+    }
+
+    $buildInputs = Get-BuildInputs
+    if (Test-BuildNeeded $buildInputs) {
+      if ((Invoke-NpmQuiet run build --prefix $repoRoot) -ne 0) {
+        Stop-Bootstrap "Failed to build civil3d-mcp"
+      }
+      Write-Stamp $buildStampPath $buildInputs
+    }
+  } finally {
+    # Released before node starts: the server runs for the whole session.
+    if ($locked) { $lock.ReleaseMutex() }
+    $lock.Dispose()
   }
-  Write-Stamp $buildStampPath $buildInputs
 }
 
 # This fork's plugin listens on 8757 (see PluginRuntime.Port), not the

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { spawnSync } from "node:child_process";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,9 +23,50 @@ function runPowerShell(shell: string, script: string, options: { cwd?: string; e
   });
 }
 
+// The same, without blocking the event loop, for launches that run side by side; `done` turns true when
+// the process has exited.
+function startPowerShell(shell: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}) {
+  const child = spawn(shell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ...args], {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
+  const run = {
+    done: false,
+    result: new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const timer = setTimeout(() => child.kill(), 110_000);
+      child.on("error", reject);
+      child.on("close", (status) => {
+        clearTimeout(timer);
+        run.done = true;
+        resolve({ status, stdout, stderr });
+      });
+    }),
+  };
+  return run;
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitFor(what: string, check: () => boolean, ms = 60_000) {
+  const deadline = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
+    await sleep(50);
+  }
+}
+
 // A throwaway repo holding a copy of the launcher, with fake npm.cmd and node.cmd first on PATH.
 // The fake npm logs its arguments and behaves like install / run build (prebuild deletes build\, then
 // tsc emits build\index.js even when it reports errors); the fake node logs that it was started.
+// Like npm 11, its install rewrites package-lock.json unless --no-save is passed. Two npm runs at once
+// log OVERLAP. With FAKE_NPM_HOLD_BUILD set to a file path, the build writes build-started next to the
+// fakes and waits until the file at FAKE_NPM_HOLD_BUILD exists.
 function makeLauncherRepo() {
   const temp = mkdtempSync(path.join(os.tmpdir(), "c3dmcp-launcher-"));
   const repo = path.join(temp, "repo");
@@ -46,19 +87,34 @@ function makeLauncherRepo() {
   for (const [name, text] of Object.entries(files)) writeFileSync(path.join(repo, name), text);
 
   writeFileSync(path.join(bin, "fake-npm.mjs"), `
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 const args = process.argv.slice(2);
-appendFileSync(${JSON.stringify(path.join(bin, "npm-calls.txt"))}, args.join(" ") + "\\n");
+const calls = ${JSON.stringify(path.join(bin, "npm-calls.txt"))};
+appendFileSync(calls, args.join(" ") + "\\n");
+const running = ${JSON.stringify(path.join(bin, "npm-running"))};
+try {
+  closeSync(openSync(running, "wx"));
+  process.on("exit", () => rmSync(running, { force: true }));
+} catch {
+  appendFileSync(calls, "OVERLAP\\n");
+}
 const prefix = args[args.indexOf("--prefix") + 1];
 if (process.env.FAKE_NPM_STDERR) process.stderr.write("npm notice New major version of npm available!\\n");
 if (args[0] === "install") {
   mkdirSync(path.join(prefix, "node_modules"), { recursive: true });
+  if (!args.includes("--no-save")) writeFileSync(path.join(prefix, "package-lock.json"), '{ "lockfileVersion": 3, "rewritten": true }\\n');
   console.log("added 1 package");
 } else if (args[0] === "run" && args[1] === "build") {
   rmSync(path.join(prefix, "build"), { recursive: true, force: true });
   mkdirSync(path.join(prefix, "build"), { recursive: true });
   writeFileSync(path.join(prefix, "build", "index.js"), "// fake build\\n");
+  const hold = process.env.FAKE_NPM_HOLD_BUILD;
+  if (hold) {
+    writeFileSync(${JSON.stringify(path.join(bin, "build-started"))}, "");
+    const deadline = Date.now() + 90000;
+    while (!existsSync(hold) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+  }
   if (process.env.FAKE_NPM_FAIL_BUILD) {
     console.log("src/tools/a.ts(1,1): error TS2304: Cannot find name 'x'.");
     process.exit(2);
@@ -71,7 +127,7 @@ if (args[0] === "install") {
 
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (!["PATH", "TEMP", "TMP", "CIVIL3D_PORT", "FAKE_NPM_STDERR", "FAKE_NPM_FAIL_BUILD"].includes(key.toUpperCase())) env[key] = value;
+    if (!["PATH", "TEMP", "TMP", "CIVIL3D_PORT", "FAKE_NPM_STDERR", "FAKE_NPM_FAIL_BUILD", "FAKE_NPM_HOLD_BUILD"].includes(key.toUpperCase())) env[key] = value;
   }
   const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
   env.Path = `${bin};${process.env[pathKey] ?? ""}`;
@@ -86,12 +142,36 @@ if (args[0] === "install") {
     return lines;
   };
 
+  const launcher = path.join(repo, "scripts", "claude-bootstrap-and-run.ps1");
+  const runs: Array<Promise<unknown>> = [];
   return {
     repo,
-    logPath: path.join(logDir, "civil3d-mcp-bootstrap.log"),
+    temp,
+    bin,
+    launcher,
+    // One log per clone, named by the launcher's key for that clone.
+    get logPath() {
+      const logs = readdirSync(logDir).filter((name) => /^civil3d-mcp-bootstrap-[0-9a-f]{16}\.log$/.test(name));
+      expect(logs).toHaveLength(1);
+      return path.join(logDir, logs[0]);
+    },
     launch(shell: string, extraEnv: NodeJS.ProcessEnv = {}) {
-      const result = runPowerShell(shell, path.join(repo, "scripts", "claude-bootstrap-and-run.ps1"), { cwd: repo, env: { ...env, ...extraEnv } });
+      const result = runPowerShell(shell, launcher, { cwd: repo, env: { ...env, ...extraEnv } });
       return { status: result.status, stdout: result.stdout, stderr: result.stderr, npm: take("npm-calls.txt"), node: take("node-calls.txt") };
+    },
+    start(shell: string, extraEnv: NodeJS.ProcessEnv = {}) {
+      return this.track(startPowerShell(shell, [launcher], { cwd: repo, env: { ...env, ...extraEnv } }));
+    },
+    track<T extends { result: Promise<unknown> }>(run: T) {
+      runs.push(run.result);
+      return run;
+    },
+    // Waits for every process from start() or track(), so cleanup finds no file in use after a failure.
+    async settle() {
+      await Promise.allSettled(runs);
+    },
+    calls() {
+      return { npm: take("npm-calls.txt"), node: take("node-calls.txt") };
     },
     cleanup() {
       rmSync(temp, { recursive: true, force: true });
@@ -107,16 +187,19 @@ for (const shell of shells) {
       expect(result.stdout).toContain("0 failure(s)");
     }, 120_000);
 
-    it("launcher installs, builds once and starts node, keeping stdout for node only", () => {
+    it("launcher installs, builds once and starts node, keeping stdout for node only and the lock as committed", () => {
       const fixture = makeLauncherRepo();
       try {
+        const lockPath = path.join(fixture.repo, "package-lock.json");
+        const committedLock = readFileSync(lockPath, "utf8");
         const first = fixture.launch(shell);
         expect(first.status, first.stderr).toBe(0);
         expect(first.stdout).toBe("");
-        expect(first.npm.map((call) => call.split(" ").slice(0, 2).join(" "))).toEqual(["install --no-fund", "run build"]);
+        expect(first.npm.map((call) => call.split(" ").slice(0, 2).join(" "))).toEqual(["install --no-save", "run build"]);
         expect(first.node).toHaveLength(1);
         expect(first.node[0]).toMatch(/[\\/]build[\\/]index\.js$/);
         expect(readFileSync(fixture.logPath, "utf8")).toContain("built");
+        expect(readFileSync(lockPath, "utf8")).toBe(committedLock);
 
         const second = fixture.launch(shell);
         expect(second.status, second.stderr).toBe(0);
@@ -194,6 +277,72 @@ for (const shell of shells) {
         expect(retried.npm).toEqual([`run build --prefix ${fixture.repo}`]);
         expect(retried.node).toHaveLength(1);
       } finally {
+        fixture.cleanup();
+      }
+    }, 120_000);
+
+    it("concurrent launches of one clone install and build once, and both start node", async () => {
+      const fixture = makeLauncherRepo();
+      const release = path.join(fixture.temp, "release-build");
+      try {
+        const holdEnv = { FAKE_NPM_HOLD_BUILD: release };
+        const first = fixture.start(shell, holdEnv);
+        await waitFor("the first launcher's build", () => existsSync(path.join(fixture.bin, "build-started")) || first.done);
+        expect(first.done, "first launcher exited before building").toBe(false);
+        const second = fixture.start(shell, holdEnv);
+        // The second finds no build stamp yet, so it waits for the lock instead of building alongside.
+        await sleep(3000);
+        expect(second.done).toBe(false);
+        writeFileSync(release, "");
+        for (const run of await Promise.all([first.result, second.result])) {
+          expect(run.status, run.stderr).toBe(0);
+          expect(run.stdout).toBe("");
+        }
+        const { npm, node } = fixture.calls();
+        expect(npm).toEqual([`install --no-save --no-fund --no-audit --prefix ${fixture.repo}`, `run build --prefix ${fixture.repo}`]);
+        expect(node).toHaveLength(2);
+      } finally {
+        writeFileSync(release, "");
+        await fixture.settle();
+        fixture.cleanup();
+      }
+    }, 120_000);
+
+    it("launcher skips the lock when up to date, waits for it otherwise, and takes over an abandoned lock", async () => {
+      const fixture = makeLauncherRepo();
+      const ready = path.join(fixture.temp, "lock-held");
+      const release = path.join(fixture.temp, "release-lock");
+      try {
+        expect(fixture.launch(shell).status).toBe(0);
+        // The helper holds the launcher's lock for this clone, then exits without releasing it, as a launcher
+        // killed mid-build would.
+        const holder = fixture.track(startPowerShell(shell, [
+          path.join(repoRoot, "tests", "powershell", "hold-launcher-lock.ps1"),
+          "-Launcher", fixture.launcher, "-ReadyFile", ready, "-ReleaseFile", release,
+        ]));
+        await waitFor("the helper to hold the lock", () => existsSync(ready) || holder.done);
+        expect(holder.done, "helper exited early").toBe(false);
+
+        const upToDate = await fixture.start(shell).result;
+        expect(upToDate.status, upToDate.stderr).toBe(0);
+        expect(holder.done, "the up-to-date launch waited for the lock").toBe(false);
+        expect(fixture.calls()).toEqual({ npm: [], node: [expect.any(String)] });
+
+        writeFileSync(path.join(fixture.repo, "src", "tools", "c.ts"), "export const c = 3;\n");
+        const stale = fixture.start(shell);
+        await sleep(3000);
+        expect(stale.done, "the stale launch did not wait for the lock").toBe(false);
+        expect(existsSync(path.join(fixture.bin, "npm-calls.txt"))).toBe(false);
+        writeFileSync(release, "");
+        const held = await holder.result;
+        expect(held.status, held.stderr).toBe(0);
+        const rebuilt = await stale.result;
+        expect(rebuilt.status, rebuilt.stderr).toBe(0);
+        expect(rebuilt.stdout).toBe("");
+        expect(fixture.calls()).toEqual({ npm: [`run build --prefix ${fixture.repo}`], node: [expect.any(String)] });
+      } finally {
+        writeFileSync(release, "");
+        await fixture.settle();
         fixture.cleanup();
       }
     }, 120_000);

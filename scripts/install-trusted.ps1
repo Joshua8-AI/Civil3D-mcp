@@ -36,7 +36,8 @@
 
 .PARAMETER Uninstall
   Remove the acaddoc.lsp block and this release's plugin folder. Reinstall the bundle with
-  install-bundle.ps1 if wanted.
+  install-bundle.ps1 if wanted. When acaddoc.lsp keeps other code, it hides again the acaddoc.lsp further
+  down the support path that the block loaded; the uninstall warns about that.
 #>
 param(
   [string] $SourceDir,
@@ -128,15 +129,26 @@ function Set-AcaddocBlock([string] $file, [string] $block) {
   $ours = [regex]::IsMatch($text, $pattern)
   # Nothing of ours to remove: leave the file exactly as it is (no rewrite, re-encoding or backup).
   if (-not $block -and -not $ours) { return }
+  # The hidden acaddoc.lsp files our old block loaded. Our file still hides them after the user adds code
+  # to it, and while one is out of reach (a share off VPN), so their load lines stay until -Uninstall.
+  $loadPattern = '\(vl-catch-all-apply ''load \(list "([^"]*)"\)\)'
+  $loads = @([regex]::Matches($text, $pattern) | ForEach-Object { [regex]::Matches($_.Value, $loadPattern) } | ForEach-Object { $_.Groups[1].Value })
   $text = [regex]::Replace($text, $pattern, "`r`n").Trim()
   if ($block -and (-not $existing -or ($ours -and -not $text))) {
     # A file that is only ours (new, or holding nothing but our block) hides an acaddoc.lsp further down
     # the support path. Load that one first, so the block wraps or appends to its S::STARTUP.
     $other = Find-OtherAcaddoc (Split-Path -Parent $file)
-    if ($other) {
-      $block = $block.Replace($beginMarker, "$beginMarker`r`n(vl-catch-all-apply 'load (list `"$($other -replace '\\', '/')`"))")
-      "  (also loads the acaddoc.lsp further down the support path: $other)"
-    }
+    if ($other) { $loads += $other -replace '\\', '/' }
+  }
+  $unique = @()
+  foreach ($load in $loads) { if ($unique -notcontains $load) { $unique += $load } }
+  if ($block -and $unique) {
+    $lines = @($unique | ForEach-Object { "(vl-catch-all-apply 'load (list `"$_`"))" })
+    $block = $block.Replace($beginMarker, (@($beginMarker) + $lines) -join "`r`n")
+    $unique | ForEach-Object { "  (also loads the acaddoc.lsp further down the support path: $_)" }
+  } elseif ($unique -and $text) {
+    # -Uninstall keeps a file that holds other code, and that file hides them again.
+    Write-Warning "$file keeps other code, so it hides the acaddoc.lsp further down the support path again: $($unique -join ', '). Load that file from it if it should still run."
   }
   if ($existing -and -not $ours -and -not (Test-Path "$file.c3dmcp-backup")) {
     # Someone else's file: keep a copy of it as it was before the first change.

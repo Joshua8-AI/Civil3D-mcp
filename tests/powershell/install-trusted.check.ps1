@@ -124,6 +124,49 @@ try {
     Check "run ${run}: user file gets no load line" (-not $text.Contains("'load (list"))
     Check "run ${run}: user file keeps its code and one block" ($text.StartsWith('(princ "user")') -and (Count $text $beginMarker) -eq 1)
   }
+
+  # The user adds code to the file the install created: re-runs keep the load line, with the hidden file in
+  # reach or not, and -Uninstall keeps the user's code without it and warns that the file is hidden again.
+  $load = "(vl-catch-all-apply 'load (list `"C:/Fake/Support/acaddoc.lsp`"))"
+  $fakeOther = 'C:\Fake\Support\acaddoc.lsp'
+  $f = New-CaseFile 'userappend'
+  Set-AcaddocBlock $f $block | Out-Null
+  [IO.File]::AppendAllText($f, "(load `"wsp-core.lsp`")`r`n")
+  foreach ($case in @{ Name = 'in reach'; Other = 'C:\Fake\Support\acaddoc.lsp' }, @{ Name = 'out of reach'; Other = $null }) {
+    $fakeOther = $case.Other
+    Set-AcaddocBlock $f $block | Out-Null
+    $text = [IO.File]::ReadAllText($f)
+    Check "user code added, hidden file $($case.Name): load line kept once" ((Count $text $load) -eq 1)
+    Check "user code added, hidden file $($case.Name): load line before (cond" ($text.IndexOf($load) -ge 0 -and $text.IndexOf($load) -lt $text.IndexOf('(cond'))
+    Check "user code added, hidden file $($case.Name): user code and one block" ($text.Contains('(load "wsp-core.lsp")') -and (Count $text $beginMarker) -eq 1)
+  }
+  $out = @(Set-AcaddocBlock $f '' 3>&1)
+  $text = [IO.File]::ReadAllText($f)
+  Check 'uninstall keeps the user code, without our block or the load line' ($text.Contains('(load "wsp-core.lsp")') -and -not $text.Contains($beginMarker) -and -not $text.Contains("'load (list"))
+  $warnings = @($out | Where-Object { $_ -is [Management.Automation.WarningRecord] })
+  Check 'uninstall warns that the hidden file is hidden again' ($warnings.Count -eq 1 -and $warnings[0].Message.Contains('C:/Fake/Support/acaddoc.lsp')) (($out | ForEach-Object { "$_" }) -join ' | ')
+
+  # The hidden file out of reach on a re-run (a share off VPN): the load line stays; with the file back
+  # (any case) there is still one; a newly found file is added next to it; -Uninstall of a file that is
+  # only ours deletes it without a warning (nothing is hidden any more).
+  $f = New-CaseFile 'offline'
+  $fakeOther = 'C:\Fake\Support\acaddoc.lsp'
+  Set-AcaddocBlock $f $block | Out-Null
+  $fakeOther = $null
+  Set-AcaddocBlock $f $block | Out-Null
+  Check 'hidden file out of reach: load line kept' ((Count ([IO.File]::ReadAllText($f)) $load) -eq 1)
+  $fakeOther = 'c:\fake\support\ACADDOC.lsp'
+  Set-AcaddocBlock $f $block | Out-Null
+  $text = [IO.File]::ReadAllText($f)
+  Check 'hidden file back: still one load line' ((Count $text "'load (list") -eq 1 -and (Count $text $load) -eq 1)
+  $fakeOther = 'D:\Other\Support\acaddoc.lsp'
+  Set-AcaddocBlock $f $block | Out-Null
+  $text = [IO.File]::ReadAllText($f)
+  $load2 = "(vl-catch-all-apply 'load (list `"D:/Other/Support/acaddoc.lsp`"))"
+  Check 'another hidden file found: both loaded once, before (cond' ((Count $text $load) -eq 1 -and (Count $text $load2) -eq 1 -and $text.IndexOf($load2) -lt $text.IndexOf('(cond'))
+  Check 'another hidden file found: one block' ((Count $text $beginMarker) -eq 1)
+  $out = @(Set-AcaddocBlock $f '' 3>&1)
+  Check 'uninstall deletes a file that held only our block, without a warning' ((-not (Test-Path $f)) -and -not ($out | Where-Object { $_ -is [Management.Automation.WarningRecord] }))
   $fakeOther = $null
 
   # --- Full-script cases with a temp APPDATA: every lock is checked before the first change.
