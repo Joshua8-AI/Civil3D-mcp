@@ -29,7 +29,8 @@ public abstract class RunCodeScript
   // Log runs on the main thread; Output can be read from the request's thread
   // when a cancelled request stops waiting while the script still runs.
   private readonly object _outputLock = new();
-  // Disposed after the run, newest first: side-database transactions, then the databases.
+  // Disposed after the run, newest first: for each side database the script's
+  // wrapper (detached only), its transaction, then the database.
   private readonly List<IDisposable> _owned = new();
   private readonly Dictionary<Database, Transaction> _transactions = new();
   private Stopwatch _clock = new();
@@ -57,7 +58,8 @@ public abstract class RunCodeScript
   /// committed when Run returns (one Civil 3D undo step) and rolled back when
   /// it throws or runs out of time. Only changes made through Tr (and transactions
   /// nested in it) are rolled back: database and system variables, files and
-  /// Session are not. Open-close transactions are refused in write mode.
+  /// Session are not. Open-close transactions are refused in write mode, and
+  /// a transaction the script starts must be the resource of a using.
   /// The run owns it: Commit() and Abort() throw, and Dispose() does nothing
   /// (RunTransaction).
   /// </summary>
@@ -190,8 +192,11 @@ public abstract class RunCodeScript
   /// <summary>
   /// Reads another DWG as a side database (never opened in the editor; the
   /// file is not locked after this returns) with a transaction of its own
-  /// (TransactionFor). Disposed when the run ends. Changes stay in memory
-  /// unless the script saves the database somewhere, which needs mode 'write'.
+  /// (TransactionFor). Disposed when the run ends: the script gets a wrapper
+  /// that does not own the database, so a using or Dispose() on it (refused
+  /// at compile time) cannot free it while the run's transaction still holds
+  /// its objects. Changes stay in memory unless the script saves the database
+  /// somewhere, which needs mode 'write'.
   /// </summary>
   public Database OpenSide(string path)
   {
@@ -223,17 +228,34 @@ public abstract class RunCodeScript
       throw;
     }
 
+    // The owning wrapper, freed by ReleaseOwned after the transaction that
+    // holds its objects.
     _owned.Add(side);
     var transaction = side.TransactionManager.StartOpenCloseTransaction();
     // The real one is disposed by ReleaseOwned; the script only gets the wrapper.
     _owned.Add(transaction);
+    // Keyed by the owning wrapper, which the script never sees, so the key
+    // cannot be disposed; Equals/GetHashCode follow the native database, so
+    // the script's wrapper and id.Database find the same entry.
     _transactions[side] = new RunTransaction(transaction);
-    return side;
+    // The script's wrapper: autoDelete false, like the ones id.Database hands
+    // out, so its Dispose() only detaches it and never deletes the database.
+    // ReleaseOwned detaches it too, so one kept past the run holds no pointer.
+    var alias = (Database)Autodesk.AutoCAD.Runtime.DisposableWrapper.Create(typeof(Database), side.UnmanagedObject, false);
+    _owned.Add(alias);
+    return alias;
   }
 
   /// <summary>The run's transaction for the drawing (Tr) or for a database from OpenSide.</summary>
   public Transaction TransactionFor(Database db)
   {
+    // A disposed wrapper has no pointer, and 2027's Database.GetHashCode reads
+    // the native database: never hash one (address 0).
+    if (db is { IsDisposed: true })
+    {
+      throw new InvalidOperationException("That database was disposed, or comes from a run that has ended: use one from this run's OpenSide, and do not dispose it (the run disposes side databases when it ends).");
+    }
+
     return _transactions.TryGetValue(db, out var transaction)
       ? transaction
       : throw new InvalidOperationException("That database has no transaction in this run: use Db or a database returned by OpenSide.");
@@ -258,6 +280,21 @@ public abstract class RunCodeScript
     catch (Exception exception)
     {
       PluginLog.Swallow("RunCode", "restoring the working database", exception);
+    }
+
+    // Tr and the side transactions as the script sees them: detached before
+    // the real ones end, so a wrapper kept past the run never reaches freed
+    // memory. The run itself only uses the real transactions from here on.
+    foreach (var wrapper in _transactions.Values.OfType<RunTransaction>())
+    {
+      try
+      {
+        wrapper.Release();
+      }
+      catch (Exception exception)
+      {
+        PluginLog.Swallow("RunCode", "releasing a transaction wrapper", exception);
+      }
     }
 
     for (var index = _owned.Count - 1; index >= 0; index--)
@@ -285,11 +322,14 @@ public abstract class RunCodeScript
 /// dereference (a Civil 3D crash). The run alone commits, aborts and disposes
 /// the real one. Members not overridden here (GetAllObjects, the RXObject
 /// members) work on the same native transaction, exactly as on the real object;
-/// OpenCloseTransaction does not override them either.
+/// OpenCloseTransaction does not override them either. When the run ends,
+/// Release() zeroes this wrapper's pointer, so those members then fail with a
+/// NullReferenceException instead of reading the freed transaction.
 /// </summary>
 internal sealed class RunTransaction : Transaction
 {
   private readonly Transaction _run;
+  private volatile bool _released;
 
   // autoDelete false: this wrapper never ends or frees the native transaction.
   internal RunTransaction(Transaction run) : base(run.UnmanagedObject, false)
@@ -299,9 +339,18 @@ internal sealed class RunTransaction : Transaction
 
   // A wrapper kept past its run (in Session, or by a task still running)
   // must not reach the disposed transaction: that is a native crash.
-  private Transaction Run => _run.IsDisposed
+  private Transaction Run => _released || _run.IsDisposed
     ? throw new InvalidOperationException("This transaction belongs to a run that has ended; use the current run's Tr.")
     : _run;
+
+  // Main thread, when the run ends (ReleaseOwned). The base Dispose with
+  // AutoDelete false only detaches (pointer zeroed, nothing freed): the
+  // override below stays a no-op for the script.
+  internal void Release()
+  {
+    _released = true;
+    base.Dispose(true);
+  }
 
   public override DBObject GetObject(ObjectId id, OpenMode mode) => Run.GetObject(id, mode);
 

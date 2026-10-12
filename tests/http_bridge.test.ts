@@ -485,6 +485,26 @@ describe("httpBridge", () => {
       ["civil3d_preview_action", { toolName: "civil3d_run_code", action: "run", parameters: { code: "return 1;" } }],
       ["civil3d_orchestrate", { toolName: "civil3d_run_code", toolParameters: { code: "return 1;" }, execute: true }],
       ["civil3d_docs", { action: "orchestrate", toolName: "civil3d_run_code", toolParameters: { code: "return 1;" }, execute: true }],
+      // Named only deeper down: orchestrate/docs nest, so the gate looks at
+      // every string at any depth, case-insensitively.
+      ["civil3d_orchestrate", {
+        toolName: "civil3d_docs",
+        toolAction: "orchestrate",
+        execute: true,
+        toolParameters: { action: "orchestrate", toolName: "civil3d_run_code", execute: true, toolParameters: { code: "return 1;" } },
+      }],
+      ["civil3d_docs", {
+        action: "orchestrate",
+        toolName: "civil3d_docs",
+        execute: true,
+        toolParameters: {
+          action: "orchestrate",
+          toolName: "civil3d_orchestrate",
+          execute: true,
+          toolParameters: { toolName: "CIVIL3D_RUN_CODE", execute: true, toolParameters: { code: "return 1;" } },
+        },
+      }],
+      ["civil3d_orchestrate", { request: "Count the lines with Civil3D_Run_Code", execute: true }],
     ];
 
     it.each(runCodeCalls)("refuses %s for civil3d_run_code with 403 when no token is configured", async (tool, parameters) => {
@@ -532,6 +552,26 @@ describe("httpBridge", () => {
 
       expect(res.status).toBe(200);
       expect(executeRegisteredToolMock).toHaveBeenCalledWith("civil3d_request_approval", parameters);
+    });
+
+    it("still routes nested orchestration of other tools without a token", async () => {
+      hasToolHandlerMock.mockImplementation((name) => name === "civil3d_orchestrate");
+      executeRegisteredToolMock.mockResolvedValue({ status: "executed" });
+      handle = await launchBridge({ authToken: "" });
+
+      const parameters = {
+        toolName: "civil3d_docs",
+        toolAction: "orchestrate",
+        execute: true,
+        toolParameters: { action: "orchestrate", toolName: "civil3d_alignment", toolAction: "list", execute: true },
+      };
+      const res = await request("POST", `${handle.baseUrl}/execute`, {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tool: "civil3d_orchestrate", parameters }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(executeRegisteredToolMock).toHaveBeenCalledWith("civil3d_orchestrate", parameters);
     });
   });
 

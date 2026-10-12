@@ -426,9 +426,11 @@ internal static class ScriptCompiler
         return $"{display} queues command-line input that would run after the script, outside its transaction.";
       }
 
-      // ShowDialog of any toolkit (WinForms, WPF, Autodesk.AutoCAD.Windows),
-      // so no list of dialog classes is needed.
-      if (name == "ShowDialog"
+      // ShowDialog and ShowModal of any toolkit (WinForms, WPF, and the
+      // Autodesk.AutoCAD.Windows dialogs, which have both), so no list of
+      // dialog classes is needed; AdWindows' TaskDialog opens with Show().
+      if (name is "ShowDialog" or "ShowModal"
+          || (typeName == "Autodesk.Windows.TaskDialog" && name == "Show")
           || (typeName is "Autodesk.AutoCAD.ApplicationServices.Application" or "Autodesk.AutoCAD.ApplicationServices.Core.Application"
               && name is "ShowModalDialog" or "ShowModalWindow" or "ShowAlertDialog" or "Quit")
           || (typeName is "System.Windows.Forms.MessageBox" or "System.Windows.MessageBox" && name == "Show")
@@ -484,6 +486,26 @@ internal static class ScriptCompiler
       return $"{display}: write mode rolls back only changes made through Tr, and these commit on their own. Use Tr or Open<T>(id, forWrite: true).";
     }
 
+    // A transaction the snippet starts (write: StartTransaction, read:
+    // StartOpenCloseTransaction; each mode refuses the other kind) must end on
+    // every path. One left open is aborted by the run through a wrapper of its
+    // own, and the snippet's wrapper then ends it again from the finalizer
+    // thread, a later Civil 3D crash.
+    if (symbol is IMethodSymbol && type?.Name == "TransactionManager"
+        && name == (writeMode ? "StartTransaction" : "StartOpenCloseTransaction")
+        && !(InvocationOf(node) is { } call && IsUsingResource(call)))
+    {
+      return $"{display}: start it only as 'using var t = db.TransactionManager.{name}();' or 'using (var t = db.TransactionManager.{name}()) {{ ... }}', so it ends on every path; a transaction left open crashes Civil 3D later.";
+    }
+
+    // OpenSide hands out a database the run disposes when it ends (after the
+    // transaction that holds its objects); the snippet's wrapper does not own
+    // it, so a using or Dispose() on it would only detach that wrapper.
+    if (DisposesSideDatabase(symbol, node, model))
+    {
+      return "OpenSide(...): the run disposes side databases when it ends; remove the using or the Dispose() call.";
+    }
+
     if (writeMode)
     {
       return null;
@@ -500,7 +522,7 @@ internal static class ScriptCompiler
     {
       if (name == "StartTransaction" && type != null && type.Name == "TransactionManager")
       {
-        return $"{display}: a regular transaction outside a command clears the drawing's undo history. Use Tr, OpenSide/TransactionFor, or StartOpenCloseTransaction() in read mode.";
+        return $"{display}: a regular transaction outside a command clears the drawing's undo history. Use Tr, OpenSide/TransactionFor, or 'using var t = db.TransactionManager.StartOpenCloseTransaction();' in read mode.";
       }
 
       if ((InheritsFrom(type, "Autodesk.AutoCAD.DatabaseServices.DBObject") && name is "UpgradeOpen" or "UpgradeFromNotify" or "Erase" or "SwapIdWith" or "HandOverTo")
@@ -568,6 +590,64 @@ internal static class ScriptCompiler
       && model.GetSymbolInfo(invocation).Symbol is IMethodSymbol { Name: "TransactionFor" } method
       && InheritsFrom(method.ContainingType, BaseClassName);
   }
+
+  // The call "M(...)" or "x.M(...)" whose method name is node, or null (a
+  // method group, for example).
+  private static InvocationExpressionSyntax? InvocationOf(SimpleNameSyntax node)
+  {
+    SyntaxNode callee = node.Parent is MemberAccessExpressionSyntax access && access.Name == node ? access : node;
+    return callee.Parent is InvocationExpressionSyntax invocation && invocation.Expression == callee ? invocation : null;
+  }
+
+  // The resource of "using (e)", "using (var v = e)" or "using var v = e;".
+  private static bool IsUsingResource(ExpressionSyntax expression)
+  {
+    if (expression.Parent is UsingStatementSyntax statement && statement.Expression == expression)
+    {
+      return true;
+    }
+
+    return expression.Parent is EqualsValueClauseSyntax { Parent: VariableDeclaratorSyntax { Parent: VariableDeclarationSyntax declaration } }
+      && (declaration.Parent is UsingStatementSyntax
+          || (declaration.Parent is LocalDeclarationStatementSyntax local && local.UsingKeyword.IsKind(SyntaxKind.UsingKeyword)));
+  }
+
+  // A using over OpenSide(...), or over a local initialised directly from it,
+  // or Dispose() called on either.
+  private static bool DisposesSideDatabase(ISymbol symbol, SimpleNameSyntax node, SemanticModel model)
+  {
+    if (IsOpenSide(symbol))
+    {
+      return InvocationOf(node) is { } call && IsUsingResource(call);
+    }
+
+    if (symbol is ILocalSymbol && IsUsingResource(node))
+    {
+      return IsSideDatabase(model, node);
+    }
+
+    return symbol is IMethodSymbol { Name: "Dispose" }
+      && node.Parent is MemberAccessExpressionSyntax access && access.Name == node
+      && IsSideDatabase(model, access.Expression);
+  }
+
+  // OpenSide(...) itself, or a local whose declaration initialises it from OpenSide(...).
+  private static bool IsSideDatabase(SemanticModel model, ExpressionSyntax expression)
+  {
+    if (expression is InvocationExpressionSyntax invocation)
+    {
+      return IsOpenSide(model.GetSymbolInfo(invocation).Symbol);
+    }
+
+    return model.GetSymbolInfo(expression).Symbol is ILocalSymbol local
+      && local.DeclaringSyntaxReferences.Any(reference =>
+        reference.GetSyntax() is VariableDeclaratorSyntax { Initializer.Value: InvocationExpressionSyntax value }
+        && IsOpenSide(model.GetSymbolInfo(value).Symbol));
+  }
+
+  // RunCodeScript.OpenSide (not a local function of the snippet with that name).
+  private static bool IsOpenSide(ISymbol? symbol) =>
+    symbol is IMethodSymbol { Name: "OpenSide" } method && method.ContainingType?.ToDisplayString() == BaseClassName;
 
   // Every way of writing to it: X = v, X += v, X++, --X, (X) = v, X!++,
   // (X, y) = (...) at any tuple depth, and C# 14's Db?.X = v.

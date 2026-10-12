@@ -2,6 +2,9 @@
 // Program.cs: the Log cap (RunCodeOutput.cs) and the runCode token (RpcAuth.cs).
 // RunTransaction (RunCodeScript.cs) needs AutoCAD at runtime, so it is only
 // compiled here (with the plugin build) and checked live in Civil 3D.
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json.Nodes;
 using Civil3DMcpPlugin;
@@ -47,6 +50,10 @@ internal static class RuntimeChecks
       var token = File.ReadAllText(RpcAuth.TokenPath);
       expect(token.Length == 64 && token.All(Uri.IsHexDigit), "the token is 64 hex characters");
       expect(Directory.GetFiles(folder).Length == 1, "Issue leaves no temp file behind");
+      if (OperatingSystem.IsWindows())
+      {
+        expect(IsPrivate(RpcAuth.TokenPath), "the token file has a protected DACL with one allow rule, for this user (also its owner)");
+      }
 
       expect(Accepts(token), "Require accepts this session's token");
       expect(Refused(null) && Refused(new JsonObject()), "Require refuses a call without authToken");
@@ -66,7 +73,13 @@ internal static class RuntimeChecks
       expect(File.ReadAllText(RpcAuth.TokenPath) == "another instance", "Revoke keeps a token file another instance wrote");
       expect(Refused(Token(second)), "after Revoke runCode is refused");
 
+      // Replaces the file written above with the folder's inherited permissions.
       RpcAuth.Issue();
+      if (OperatingSystem.IsWindows())
+      {
+        expect(IsPrivate(RpcAuth.TokenPath), "a token file that replaces one with inherited permissions is private too");
+      }
+
       RpcAuth.Revoke();
       expect(!File.Exists(RpcAuth.TokenPath), "Revoke deletes its own token file");
 
@@ -86,6 +99,19 @@ internal static class RuntimeChecks
       {
       }
     }
+  }
+
+  [SupportedOSPlatform("windows")]
+  private static bool IsPrivate(string path)
+  {
+    using var identity = WindowsIdentity.GetCurrent();
+    var security = new FileInfo(path).GetAccessControl();
+    var rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().ToList();
+    return security.AreAccessRulesProtected
+      && Equals(security.GetOwner(typeof(SecurityIdentifier)), identity.User)
+      && rules.Count == 1
+      && rules[0].AccessControlType == AccessControlType.Allow
+      && Equals(rules[0].IdentityReference, identity.User);
   }
 
   private static JsonObject Token(string token) => new() { [RpcAuth.ParameterName] = token };

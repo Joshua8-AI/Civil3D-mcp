@@ -267,6 +267,6 @@ describe("civil3d_run_code execution", () => {
     expect(error.code).toBe("CIVIL3D.TIMEOUT");
     expect(error.message).toContain("Command timed out after 150000ms: runCode");
     expect(error.message).toContain("%LOCALAPPDATA%\\Civil3DMcpPlugin\\run-code\\");
-    expect(error.message).toContain("summary.json");
+    expect(error.message).toContain("run.json");
   });
 });
