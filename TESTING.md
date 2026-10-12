@@ -659,6 +659,27 @@ Live checklist (kept for 2027 and later changes):
 - `build-2027.ps1` leaves `obj\project.assets.json` on `net8.0-windows` afterwards so a
   default 2026 build with `--no-restore` still works.
 
+## label_add (2026-10-11, `jorgegarcias60/label-add-fixes`)
+
+Offline: `tests/label_commands_source.test.ts` (4 source guards; they fail on the d33f8ba code),
+plugin builds for 2026 (net8) and 2027 (net10) with 0 warnings.
+
+Live, Civil 3D 2026, 2026-10-11, `node scripts/live-label-smoke.mjs --expect-drawing RUNCODE-SMOKE`
+on a scratch copy of the test job: **9/9 passed**. The script builds its own alignment (line, arc,
+line, spiral-curve-spiral, line), two profile views and a pipe network, then:
+- `label_set` with three label sets gives `labelGroups` 0, 4 and 5 (each replaces the previous);
+- `curves` gives 2 labels (the simple arc and the arc inside the spiral-curve-spiral);
+- pipe and structure `plan` give 1 label each; `profile` gives 2 each, one in each view (checked by
+  position), `skipped` 0;
+- a pipe shown in no profile view gives "not drawn in any profile view".
+
+The first live run caught a bug the offline checks could not: Civil 3D keeps one
+`ProfileViewPart` per part, shared by every view that shows it, with placeholder extents
+((0,0)-(1,0)), so matching views by extents labelled only the first view. Each view from
+`GetProfileViewsDisplayingMe` is now labelled with `Part.ProfileViewPartId`.
+
+Not yet run on Civil 3D 2027 (Luis): run the same two scripts there.
+
 ## Not automated
 
 The plugin has no C# unit tests; `tests/FileBoundaryHarness` (dotnet) is upstream's
