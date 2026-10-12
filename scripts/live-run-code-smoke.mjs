@@ -388,8 +388,10 @@ try {
     });
     const after = await run({ code: countTagged, args: { tag: `${tag}-NESTED` } });
     // The nested commit lands in the run's transaction, so the run's rollback removes it too.
-    record("write: a nested transaction in a using commits with the run", nested.status === "runtime_error" && after.result === 0,
-      { status: nested.status, error: nested.error?.message, after: after.result, warnings: nested.warnings });
+    // Only the script's own last line may fail: an earlier error would also leave nothing behind.
+    record("write: a nested transaction in a using commits with the run",
+      nested.status === "runtime_error" && nested.error?.message === "roll back the outer run" && nested.committed === false && after.result === 0,
+      { status: nested.status, error: nested.error?.message, committed: nested.committed, after: after.result, warnings: nested.warnings });
   });
 
   await check("write: using var tx = Tr commits as usual, one undo removes it", async () => {
