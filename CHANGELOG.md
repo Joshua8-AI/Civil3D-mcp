@@ -4,6 +4,12 @@
 
 ### Added
 
+- `civil3d_plot` action `sheet_plot` (plugin method `createSheetAndPlot`):
+  builds a titled sheet on a paper-space layout (viewport made by MVIEW and
+  zoomed to a model window, double border, title block, north arrow) and plots
+  it to one PDF on DWG To PDF.pc3. For drawings with no paper-space viewport.
+  Experimental: not yet verified in Civil 3D 2027.
+
 - `civil3d_run_code` (plugin method `runCode`): runs a C# snippet inside Civil
   3D, compiled with Roslyn into a uniquely named in-memory assembly (its own
   collectible load context, unloaded after the run) and run on the main thread
