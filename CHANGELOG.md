@@ -4,6 +4,15 @@
 
 ### Added
 
+- `civil3d_grading` action `grading_volume` (plugin method
+  `getBoundedVolumeFromPoints`): cut, fill and net volume of a TIN surface
+  against a flat datum inside two closed polygons, from
+  `TinSurface.GetBoundedVolumes`. It needs no grading group, which Civil 3D
+  2027 cannot create through a public API. Read-only.
+- `civil3d_grading` `group_create` takes an optional `site`: the group goes in
+  that site, which is created when it does not exist. With no `site` and no
+  site in the drawing, a site is now created instead of failing.
+
 - `civil3d_run_code` (plugin method `runCode`): runs a C# snippet inside Civil
   3D, compiled with Roslyn into a uniquely named in-memory assembly (its own
   collectible load context, unloaded after the run) and run on the main thread

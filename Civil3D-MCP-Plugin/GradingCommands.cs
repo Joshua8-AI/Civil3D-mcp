@@ -58,15 +58,37 @@ public static class GradingCommands
     var name = PluginRuntime.GetRequiredString(parameters, "name");
     var description = PluginRuntime.GetOptionalString(parameters, "description") ?? string.Empty;
     var useProjection = PluginRuntime.GetOptionalBool(parameters, "useProjection") ?? false;
+    // Optional: name the site the group is created in. If it does not exist yet, a site with that
+    // name is created and used, so a fresh drawing with no sites does not need a separate
+    // create-site step (Civil 3D only creates sites implicitly through the ribbon UI).
+    var siteParam = PluginRuntime.GetOptionalString(parameters, "site");
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       var siteIds = civilDoc.GetSiteIds().Cast<ObjectId>();
-      var firstSiteId = siteIds.FirstOrDefault();
+      ObjectId firstSiteId = ObjectId.Null;
 
-      if (firstSiteId == ObjectId.Null)
+      // If a specific site was requested, resolve it by name, creating it if absent.
+      if (!string.IsNullOrWhiteSpace(siteParam))
       {
-        throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", "No site found in the drawing. Create a site first before adding a grading group.");
+        foreach (ObjectId id in civilDoc.GetSiteIds())
+        {
+          var s = transaction.GetObject(id, OpenMode.ForRead);
+          if (string.Equals(CivilObjectUtils.GetName(s), siteParam, StringComparison.OrdinalIgnoreCase))
+          {
+            firstSiteId = id;
+            break;
+          }
+        }
+        if (firstSiteId == ObjectId.Null)
+          firstSiteId = Autodesk.Civil.DatabaseServices.Site.Create(civilDoc, siteParam);
+      }
+      else
+      {
+        firstSiteId = siteIds.FirstOrDefault();
+        // No site exists and none was requested: create one so the group has a container.
+        if (firstSiteId == ObjectId.Null)
+          firstSiteId = Autodesk.Civil.DatabaseServices.Site.Create(civilDoc, string.IsNullOrWhiteSpace(name) ? "Site1" : name + " Site");
       }
 
       var siteObj = transaction.GetObject(firstSiteId, OpenMode.ForRead);
@@ -92,6 +114,7 @@ public static class GradingCommands
         ["name"] = name,
         ["handle"] = CivilObjectUtils.GetHandle(newGroup),
         ["description"] = description,
+        ["site"] = siteParam ?? CivilObjectUtils.GetName(transaction.GetObject(firstSiteId, OpenMode.ForRead)),
         ["created"] = true,
       };
     });
@@ -145,6 +168,90 @@ public static class GradingCommands
         ["units"] = new Dictionary<string, string> { ["volume"] = CivilObjectUtils.VolumeUnits(database) },
       };
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // getBoundedVolumeFromPoints
+  // -------------------------------------------------------------------------
+
+  // Cut/fill of a TIN surface against a flat datum inside two closed polygons, from Civil 3D's own
+  // volume engine (TinSurface.GetBoundedVolumes). It needs no grading group (2027 has no public API to
+  // create one), so it works straight from design geometry. Pick a datum below the site so the surface
+  // reads as fill above it. The result adds both polygons and also reports each polygon's net volume.
+  //   polygonA, polygonB : closed, non-self-crossing rings of {x, y, z} (z is ignored), at least 3 points.
+  public static Task<object?> GetBoundedVolumeFromPointsAsync(JsonObject? parameters)
+  {
+    var surfaceName = PluginRuntime.GetRequiredString(parameters, "surfaceName");
+    var polygonA = ReadPolygonNode(parameters, "polygonA");
+    var polygonB = ReadPolygonNode(parameters, "polygonB");
+    var datum = PluginRuntime.GetOptionalDouble(parameters, "datum") ?? 0.0;
+
+    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      var baseId = FindSurfaceIdByName(civilDoc, transaction, surfaceName)
+        ?? throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Surface '{surfaceName}' not found.");
+
+      var baseSurface = transaction.GetObject(baseId, OpenMode.ForRead) as Autodesk.Civil.DatabaseServices.TinSurface
+        ?? throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"Surface '{surfaceName}' is not a TIN surface.");
+
+      (double cut, double fill, double net) VolumesOf(Point3dCollection ring)
+      {
+        try
+        {
+          var info = baseSurface.GetBoundedVolumes(ring, datum);
+          return (info.Cut, info.Fill, info.Net);
+        }
+        catch (System.Exception ex) when (ex.Message.Contains("volume", System.StringComparison.OrdinalIgnoreCase)
+            || ex.Message.Contains("polygon", System.StringComparison.OrdinalIgnoreCase))
+        {
+          throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"Volume could not be computed (illegal/self-crossing bounding polygon, or datum outside the surface extent): {ex.Message}");
+        }
+      }
+
+      var a = VolumesOf(polygonA);
+      var b = VolumesOf(polygonB);
+
+      return new Dictionary<string, object?>
+      {
+        ["surfaceName"] = surfaceName,
+        ["datum"] = datum,
+        ["cut"] = a.cut + b.cut,
+        ["fill"] = a.fill + b.fill,
+        ["net"] = a.net + b.net,
+        ["netVolumeA"] = a.net,
+        ["netVolumeB"] = b.net,
+        ["units"] = new Dictionary<string, string> { ["volume"] = CivilObjectUtils.VolumeUnits(database) },
+      };
+    });
+  }
+
+  private static Point3dCollection ReadPolygonNode(JsonObject? parameters, string key)
+  {
+    var arr = PluginRuntime.GetParameter(parameters, key) as JsonArray
+      ?? throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"Missing {key}");
+    var pts = new Point3dCollection();
+    foreach (var n in arr)
+    {
+      var o = n as JsonObject ?? throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "Each polygon point must be {x,y,z}");
+      pts.Add(new Point3d(
+        o["x"]?.GetValue<double>() ?? 0,
+        o["y"]?.GetValue<double>() ?? 0,
+        o["z"]?.GetValue<double>() ?? 0));
+    }
+    if (pts.Count < 3) throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"{key} needs at least 3 points");
+    return pts;
+  }
+
+  private static ObjectId? FindSurfaceIdByName(
+    Autodesk.Civil.ApplicationServices.CivilDocument civilDoc,
+    Transaction transaction, string name)
+  {
+    foreach (ObjectId id in civilDoc.GetSurfaceIds())
+    {
+      var s = transaction.GetObject(id, OpenMode.ForRead);
+      if (string.Equals(CivilObjectUtils.GetName(s), name, StringComparison.OrdinalIgnoreCase)) return id;
+    }
+    return null;
   }
 
   // -------------------------------------------------------------------------

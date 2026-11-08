@@ -42,6 +42,7 @@ const canonicalGradingInputShape = {
     "group_delete",
     "group_volume",
     "group_surface_create",
+    "grading_volume",
     "list",
     "get",
     "create",
@@ -64,6 +65,9 @@ const canonicalGradingInputShape = {
   targetLayer: z.string().optional(),
   points: z.array(Point3DSchema).optional(),
   layer: z.string().optional(),
+  polygonA: z.array(Point3DSchema).optional(),
+  polygonB: z.array(Point3DSchema).optional(),
+  datum: z.number().optional(),
 };
 
 const GradingGroupListArgsSchema = z.object({
@@ -80,6 +84,9 @@ const GradingGroupCreateArgsSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
   useProjection: z.boolean().optional(),
+  // Optional site to hold the group. Created if it does not already exist, so a drawing with no
+  // sites (Civil 3D only makes sites through the ribbon UI) can still get a grading group.
+  site: z.string().optional(),
 });
 
 const GradingGroupDeleteArgsSchema = z.object({
@@ -90,6 +97,14 @@ const GradingGroupDeleteArgsSchema = z.object({
 const GradingGroupVolumeArgsSchema = z.object({
   action: z.literal("group_volume"),
   name: z.string(),
+});
+
+const GradingBoundedVolumeArgsSchema = z.object({
+  action: z.literal("grading_volume"),
+  surfaceName: z.string().describe("TIN surface whose volume against the datum is measured."),
+  datum: z.number().optional().describe("Flat datum elevation (default 0). Pick one below the site so the surface reads as fill."),
+  polygonA: z.array(Point3DSchema).min(3).describe("First closed, non-self-crossing boundary ({x,y,z}; z is ignored)."),
+  polygonB: z.array(Point3DSchema).min(3).describe("Second closed boundary; the result adds both and reports each one's net volume."),
 });
 
 const GradingGroupSurfaceCreateArgsSchema = z.object({
@@ -214,6 +229,23 @@ export const GRADING_DOMAIN_DEFINITION: DomainToolDefinition = {
       pluginMethods: ["getGradingGroupVolume"],
       execute: async (args) => await withApplicationConnection(
         async (appClient) => await appClient.sendCommand("getGradingGroupVolume", { name: args.name }),
+      ),
+    },
+    grading_volume: {
+      action: "grading_volume",
+      inputSchema: GradingBoundedVolumeArgsSchema,
+      responseSchema: GenericGradingResponseSchema,
+      capabilities: ["query", "analyze"],
+      requiresActiveDrawing: true,
+      safeForRetry: true,
+      pluginMethods: ["getBoundedVolumeFromPoints"],
+      execute: async (args) => await withApplicationConnection(
+        async (appClient) => await appClient.sendCommand("getBoundedVolumeFromPoints", {
+          surfaceName: args.surfaceName,
+          datum: args.datum ?? 0,
+          polygonA: args.polygonA,
+          polygonB: args.polygonB,
+        }),
       ),
     },
     group_surface_create: {
@@ -370,6 +402,7 @@ export const GRADING_DOMAIN_DEFINITION: DomainToolDefinition = {
         "group_create",
         "group_delete",
         "group_volume",
+        "grading_volume",
         "group_surface_create",
         "list",
         "get",

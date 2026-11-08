@@ -160,6 +160,7 @@ public static class CommandDispatcher
       "deleteGradingGroup" => GradingCommands.DeleteGradingGroupAsync(parameters),
       "getGradingGroupVolume" => GradingCommands.GetGradingGroupVolumeAsync(parameters),
       "createSurfaceFromGradingGroup" => GradingCommands.CreateSurfaceFromGradingGroupAsync(parameters),
+      "getBoundedVolumeFromPoints" => GradingCommands.GetBoundedVolumeFromPointsAsync(parameters),
       "listGradings" => GradingCommands.ListGradingsAsync(parameters),
       "getGrading" => GradingCommands.GetGradingAsync(parameters),
       "createGrading" => GradingCommands.CreateGradingAsync(parameters),
