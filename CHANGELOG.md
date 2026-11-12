@@ -143,16 +143,24 @@
     undoable step, and the command keeps the user's pickfirst selection;
   - command-line input (undo, redo, Storm and Sanitary, data-shortcut
     commands) is sent through COM `SendCommand` after the operation instead of
-    `SendStringToExecute`, whose queued input got mixed into the plugin
-    command's input (`UNDO` received "C3DMCPHOP" as its count).
-  A command, prompt or modal dialog that holds Civil 3D for 15 s now fails the
-  request with `CIVIL3D.HOST_BUSY` (watcher from jorgegarcias60/Civil3D-mcp#1
-  and #2) instead of a 120 s timeout, and plugin calls no longer cancel a
-  command or prompt the user has open.
-- `redoDrawing` sent `REDO n`; `REDO` takes no count, so the count reached the
-  command line as an unknown command. It now sends `MREDO n`, and undo and
-  redo run without a document lock (a plugin read under a lock empties the
-  redo stack).
+    `SendStringToExecute`, whose queued input mixed with the plugin command's;
+  - `redoDrawing` sends `MREDO n` (`REDO` takes no count). Undo and redo take
+    no document lock, because taking one (even for a read) empties the redo
+    stack. Both requests return only after the command has run (or fail with
+    `CIVIL3D.HOST_BUSY` if it is still running after 15 s);
+  - pay item and cost estimate CSV exports use the plugin command only when
+    they compute earthwork (a scratch volume surface); pipe and structure
+    quantities alone are a plain read.
+
+  While a command is active for 15 s, requests fail with `CIVIL3D.HOST_BUSY`
+  (watcher from jorgegarcias60/Civil3D-mcp#1 and #2) instead of timing out. Requests that need the plugin command or a quiescent
+  editor (writes, the reads above, command-line input) also wait for a prompt
+  with `CMDACTIVE` 0, such as a LISP `getstring`, and fail the same way. A
+  plain read is not held up by such a prompt and runs while it is open. A COM
+  call that Civil 3D keeps rejecting is also `CIVIL3D.HOST_BUSY`, and a request
+  whose operation fails always ends with that error instead of waiting with
+  the plugin's execution gate held. Plugin calls no longer cancel a command or
+  prompt the user has open.
 - `getSelectedCivilObjectsInfo` and `getProjectContext` read the pickfirst
   selection inside `C3DMCPHOP`, which is flagged `UsePickSet` and `Redraw`:
   outside such a command `Editor.SelectImplied` returns an error, and the
@@ -224,9 +232,16 @@
 - `civil3d_profile get` reported symmetric parabolas as `asymmetric_parabola`
   ("parabolasymmetric" contains "asymmetric"); they are now
   `symmetric_parabola`. The response schema still accepts the old `parabola`.
+- While a modal dialog was open (e.g. the Drawing Recovery notice at startup)
+  requests timed out after 120 s: Civil 3D raises no `Application.Idle` inside
+  a modal loop. A watchdog on the timer thread now fails the request with
+  `CIVIL3D.HOST_BUSY` after 15 s without an Idle tick.
 - With no document open, drawing-dependent requests hung and wedged the
   plugin's execution gate; they now fail fast with `CIVIL3D.NO_DRAWING`, and
-  `civil3d_drawing new` works from zero documents.
+  `civil3d_drawing new` works from zero documents. A client that aborts a
+  request while its TCP connection is still being set up is now settled at
+  once instead of after the connect timeout (`verify-live-plugin.mjs`'s
+  no-drawing watchdog relies on this).
 - `civil3d_drawing` `settings` failed response validation on every drawing:
   the plugin reports `defaultStyles.corridor` as `null` unconditionally (Civil
   3D exposes no corridor style collection) and the schema rejected `null`. The

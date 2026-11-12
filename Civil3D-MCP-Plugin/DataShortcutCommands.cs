@@ -75,7 +75,7 @@ public static class DataShortcutCommands
 
     return CivilExecution.ReadThenCommandLineAsync<object?>((doc, civilDoc, database, transaction) =>
     {
-      SendCommand(doc, "CreateDataShortcuts");
+      SendCommand("CreateDataShortcuts");
 
       return new Dictionary<string, object?>
       {
@@ -135,7 +135,7 @@ public static class DataShortcutCommands
 
     return CivilExecution.ReadThenCommandLineAsync<object?>((doc, civilDoc, database, transaction) =>
     {
-      SendCommand(doc, commandName);
+      SendCommand(commandName);
 
       return new Dictionary<string, object?>
       {
@@ -183,7 +183,7 @@ public static class DataShortcutCommands
 
     return await CivilExecution.ReadThenCommandLineAsync<object?>((doc, civilDoc, database, transaction) =>
     {
-      SendCommand(doc, "_AeccSynchronizeReferences");
+      SendCommand("_AeccSynchronizeReferences");
 
       var notes = new List<string>
       {
@@ -280,7 +280,7 @@ public static class DataShortcutCommands
         // Without a pickfirst set the command simply prompts for the object.
       }
 
-      SendCommand(doc, "_AeccPromoteReference");
+      SendCommand("_AeccPromoteReference");
 
       return new Dictionary<string, object?>
       {
@@ -767,17 +767,13 @@ public static class DataShortcutCommands
       .ToList();
   }
 
-  private static void SendCommand(Document doc, string commandName)
-  {
-    try
-    {
-      CivilExecution.QueueCommandLine($"{commandName} ");
-    }
-    catch (Exception ex)
-    {
-      throw new JsonRpcDispatchException("CIVIL3D.COMMAND_FAILED", $"Failed to execute {commandName}: {ex.Message}");
-    }
-  }
+  // Queues the command for COM SendCommand after the host operation
+  // (CivilExecution.SendCommandLineAsync). Queueing itself cannot fail; a send
+  // that fails within the first seconds fails the request, while one that
+  // fails later, after a dialog stayed open, is only logged because the
+  // request has already returned.
+  private static void SendCommand(string commandName) =>
+    CivilExecution.QueueCommandLine($"{commandName} ");
 
   private static async Task<Dictionary<string, object?>> RequireDictionary(Task<object?> task, string context)
   {
