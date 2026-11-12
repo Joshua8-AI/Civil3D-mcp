@@ -115,7 +115,7 @@ describe("host routes", () => {
       if (sendString > (name === "PlotCommands.cs" ? 1 : 0)) offenders.push(`${name}: SendStringToExecute`);
     }
     expect(offenders).toEqual([]);
-    expect(counts.ReadInCommandAsync).toBe(11);
+    expect(counts.ReadInCommandAsync).toBe(9);
     expect(counts.ReadThenCommandLineAsync).toBe(6);
   });
 });
