@@ -162,6 +162,15 @@
   whose operation fails always ends with that error instead of waiting with
   the plugin's execution gate held. Plugin calls no longer cancel a command or
   prompt the user has open.
+
+  A request cancelled while its operation is already running (client
+  disconnect or timeout) still returns at once, but the next request now
+  waits until that operation has finished; before, it could start beside it.
+  Work that had not started when the request ended never runs. Command-line
+  input that Civil 3D rejects or that fails to send now fails the request
+  (`CIVIL3D.HOST_BUSY` or `CIVIL3D.COMMAND_FAILED`) instead of being reported
+  as `initiated`; a command that opens a dialog is reported once Civil 3D has
+  accepted it.
 - `getSelectedCivilObjectsInfo` and `getProjectContext` read the pickfirst
   selection inside `C3DMCPHOP`, which is flagged `UsePickSet` and `Redraw`:
   outside such a command `Editor.SelectImplied` returns an error, and the
