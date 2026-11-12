@@ -14,7 +14,7 @@ namespace Civil3DMcpPlugin;
 /// and PDF output of paper-space layouts.
 ///
 /// Implementation choice (why commands, not PlotEngine):
-///   Live testing against Civil 3D 2027 (civil3d-automation docs/FINDINGS.md)
+///   Live testing against Civil 3D 2027
 ///   found that PlotFactory/PlotEngine is crash-prone when driven from a
 ///   command/SendCommand context -- which is exactly the context this plugin
 ///   runs host work in -- and a crash takes the whole application (and any
@@ -37,7 +37,7 @@ namespace Civil3DMcpPlugin;
 ///       run before reporting success.
 ///
 /// The -PLOT prompt chain is the one established empirically with LASTPROMPT
-/// logging in civil3d-automation lisp/plot.lsp (detailed configuration = Yes,
+/// logging from an AutoLISP plot driver (detailed configuration = Yes,
 /// "Plot paper space first?" before "Hide paperspace objects?", and no
 /// "write to file?" prompt for a PDF device).
 /// </summary>

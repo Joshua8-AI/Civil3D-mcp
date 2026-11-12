@@ -995,7 +995,7 @@ The compiler is Roslyn (`Microsoft.CodeAnalysis` 4.8 or later). Civil 3D ships a
 <details>
 <summary><strong>Geometry reads for the Civil 3D-Revit bridge (actions on existing tools)</strong></summary>
 
-Read-only and never approval-gated. The Civil 3D-Revit bridge (`civil3d-automation/bridge`) calls the plugin
+Read-only and never approval-gated. A Civil 3D-Revit bridge can call the plugin
 methods directly; these MCP actions expose the same data. All coordinates are drawing coordinates in drawing units.
 
 | Tool / action | Plugin method | Description |

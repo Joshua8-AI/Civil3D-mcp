@@ -47,8 +47,7 @@ The Drawing Units dialog ignored `WM_CLOSE` and a posted `IDCANCEL`; a `BM_CLICK
 Notes: after a rebuild Civil 3D asks "Security - Unsigned Executable File" for the bundle DLL; check the path and answer **Load Once**. A plugin call made through the command-context hop cancels whatever command or prompt is active (AutoCAD's `ExecuteInCommandContextAsync` behaviour).
 
 Before the deadlock fix the zero-document scenarios hung for 120 s per call and
-wedged the plugin until Civil 3D restarted (`docs/FINDINGS.md` in
-`Joshua8-AI/civil3d-automation` has the original field report). The fix is
+wedged the plugin until Civil 3D restarted. The fix is
 `fix-no-document-deadlock` / upstream PR #8.
 
 ## Host routes without the command-context hop (`fix/plugin-command-route`, 2026-10-11, live)
@@ -242,8 +241,8 @@ assemblies (metadata only): `TinSurface.GetTriangles(bool)`,
 `Parcel.BaseCurve`/`GetGeCurve`/`Explode`, `Pipe.InnerHeight`/`OuterDiameterOrWidth`,
 `SettingsUnitZone.DrawingUnits`/`ImperialToMetricConversion`.
 
-**Mostly verified live on 2026-09-26** (see the live table above, and the
-bridge end-to-end run in civil3d-automation `bridge/TESTING.md`). Still open:
+**Mostly verified live on 2026-09-26** (see the live table above, and a
+Civil 3D-Revit bridge end-to-end run). Still open:
 
 - `getSurfaceTinVertices` on a TIN surface with an outer boundary: check that
   `totalVertexCount` excludes points outside the boundary, that a `boundary`
