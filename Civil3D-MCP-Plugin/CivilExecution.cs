@@ -104,7 +104,7 @@ public static class CivilExecution
   // callback opens short transactions of its own where it needs to read.
   public static async Task<T> ExecuteLockedWithoutTransactionAsync<T>(Func<Document, CivilDocument, Database, T> action)
   {
-    return await ExecuteSerializedAsync(async cancellationToken =>
+    return await ExecuteSerializedAsync(async (hostRequest, cancellationToken) =>
     {
       if (App.DocumentManager.MdiActiveDocument == null)
       {
@@ -132,7 +132,7 @@ public static class CivilExecution
         }
 
         return Task.CompletedTask;
-      }, needsCommand: true, needsQuietEditor: false, cancellationToken);
+      }, needsCommand: true, needsQuietEditor: false, hostRequest, cancellationToken);
 
       await AwaitHostContextAsync(hostTask, cancellationToken);
 
@@ -194,7 +194,7 @@ public static class CivilExecution
   // transactions of their own before issuing commands.
   public static async Task<T> ExecuteCommandSequenceAsync<T>(Func<Document, CancellationToken, Task<T>> action)
   {
-    return await ExecuteSerializedAsync(async cancellationToken =>
+    return await ExecuteSerializedAsync(async (hostRequest, cancellationToken) =>
     {
       // Same zero-document fast fail as ExecuteAsync: the command-context hop
       // below never fires without a document and would wedge the gate.
@@ -219,7 +219,7 @@ public static class CivilExecution
         {
           capturedException = ex;
         }
-      }, needsCommand: true, needsQuietEditor: false, cancellationToken);
+      }, needsCommand: true, needsQuietEditor: false, hostRequest, cancellationToken);
 
       await AwaitHostContextAsync(hostTask, cancellationToken);
 
