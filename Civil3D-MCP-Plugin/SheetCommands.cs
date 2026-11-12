@@ -13,11 +13,12 @@ namespace Civil3DMcpPlugin;
 
 /// <summary>
 /// Creates a paper-space sheet with a live model-space viewport using the command runner
-/// (Layout New / MVIEW), then plots it, mirroring the proven LISP chain in civil3d-automation
-/// lisp/sheet.lsp. The .NET Layout/Viewport object model does not configure a paper-space
-/// viewport reliably in a command context (it can crash the host — see that repo's docs/FINDINGS.md),
-/// so the viewport must be created by AutoCAD itself via MVIEW. Plotting is then delegated to
-/// PlotCommands.RunCommandAsync with the detailed -PLOT chain.
+/// (-LAYOUT New / MVIEW), then plots it, following a LISP chain that worked in Civil 3D. The .NET
+/// Layout/Viewport object model does not configure a paper-space viewport reliably in a command
+/// context (creating one on the current layout has crashed Civil 3D), so AutoCAD itself creates the
+/// viewport with MVIEW. The sheet is then plotted with the detailed -PLOT chain through
+/// CommandLineRunner, with FILEDIA, CMDECHO and BACKGROUNDPLOT set as civil3d_plot sets them.
+/// Experimental: see the CHANGELOG entry for what is not verified yet.
 /// </summary>
 public static class SheetCommands
 {
@@ -41,7 +42,14 @@ public static class SheetCommands
       // Resolve + boundary-check the output path first (same rule as plot_layouts_to_pdf).
       var resolved = FileBoundary.ResolveExportPath(outputPath, overwrite, ".pdf");
 
-      var sysvarLayout = Convert.ToString(App.GetSystemVariable("CTAB"));
+      // Everything this sets is restored afterwards: the current layout, the command-line plot
+      // settings, the text quality and the drawing's current text style.
+      using var sysvars = new PlotCommands.SystemVariableScope();
+      sysvars.Remember("CTAB");
+      sysvars.Set("FILEDIA", 0);
+      sysvars.Set("CMDECHO", 0);
+      sysvars.Set("BACKGROUNDPLOT", 0);
+      var originalTextStyle = doc.Database.Textstyle;
       try
       {
         // 1. Ensure the layout exists and is current.
@@ -217,15 +225,9 @@ public static class SheetCommands
           await CellText(idL + 0.06 * u, idR - 0.06 * u, tbB, r1, idLine, 0.24 * u);
         }
 
-        // 5. Plot via the detailed -PLOT chain (Layout area: the new viewport + sheet frame show up).
-        // Force text to be plotted as real, crisp TrueType FONT text (not line-art geometry), or the
-        // title block comes out as tiny unreadable vector strokes. TEXTFILTE=2/ShxToType=2 + 100% quality.
-        foreach (var (name, val) in new[] { ("TEXTFILTE", (object)2), ("SHXTEXT", (object)2), ("TEXTQLTY", (object)100) })
-          try { App.SetSystemVariable(name, val); } catch { }
-        // A fresh MCP layout must be pinned to 1:1 (not scale-to-fit) and dialog-free for the
-        // command-driven -PLOT; PAPERCONSTRASTS off so the window isn't auto-shrunk.
-        foreach (var (name, val) in new[] { ("PSVPSCALE", (object)1.0), ("PAPERCONSTRASTS", (object)0), ("FILEDIA", (object)0) })
-          try { App.SetSystemVariable(name, val); } catch { }
+        // 5. Plot via the detailed -PLOT chain. TrueType text at full quality, so the title block
+        // plots as font text rather than coarse strokes.
+        sysvars.Set("TEXTQLTY", 100);
         var orientToken = orientation == "landscape" ? "_L" : "_P";
         // Window plot area: plot exactly the full-sheet rectangle 0,0..paperW,paperH in paper space.
         // (Plot area "Layout" plots the paper-space background, whose origin/axes are not at the
@@ -243,7 +245,11 @@ public static class SheetCommands
       }
       finally
       {
-        try { App.SetSystemVariable("CTAB", sysvarLayout); } catch { }
+        if (doc.Database.Textstyle != originalTextStyle)
+        {
+          try { doc.Database.Textstyle = originalTextStyle; }
+          catch (Exception ex) { PluginLog.Warn("SheetCommands", $"Could not restore the current text style: {ex.Message}"); }
+        }
       }
 
       var fi = new FileInfo(resolved);
@@ -278,8 +284,9 @@ public static class SheetCommands
     validator.SetPlotConfigurationName(probe, PlotCommands.DefaultPdfDevice, null);
     validator.RefreshLists(probe);
     string? canonical = null;
-    foreach (string c in validator.GetCanonicalMediaNameList(probe))
+    foreach (string? c in validator.GetCanonicalMediaNameList(probe))
     {
+      if (c == null) continue;
       string? loc = null; try { loc = validator.GetLocaleMediaName(probe, c); } catch { }
       if (string.Equals(c, paperSize, StringComparison.OrdinalIgnoreCase) ||
           string.Equals(loc, paperSize, StringComparison.OrdinalIgnoreCase))
