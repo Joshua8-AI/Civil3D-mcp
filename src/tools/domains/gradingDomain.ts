@@ -56,6 +56,9 @@ const canonicalGradingInputShape = {
   name: z.string().optional(),
   description: z.string().optional(),
   useProjection: z.boolean().optional(),
+  site: z.string().min(1).optional().describe(
+    "group_create: site that holds the group, created when it does not exist. Default: the first site, or a new '<name> Site' when the drawing has none.",
+  ),
   surfaceName: z.string().optional(),
   groupName: z.string().optional(),
   handle: z.string().optional(),
@@ -84,9 +87,9 @@ const GradingGroupCreateArgsSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
   useProjection: z.boolean().optional(),
-  // Optional site to hold the group. Created if it does not already exist, so a drawing with no
-  // sites (Civil 3D only makes sites through the ribbon UI) can still get a grading group.
-  site: z.string().optional(),
+  // Site to hold the group; created if it does not exist. Without it, the first site is used, or a new
+  // one when the drawing has none (the .NET API offers no other way to make a site for a group).
+  site: z.string().min(1).optional(),
 });
 
 const GradingGroupDeleteArgsSchema = z.object({
@@ -204,6 +207,7 @@ export const GRADING_DOMAIN_DEFINITION: DomainToolDefinition = {
           name: args.name,
           description: args.description ?? "",
           useProjection: args.useProjection ?? false,
+          ...(args.site ? { site: args.site } : {}),
         }),
       ),
     },
@@ -472,6 +476,9 @@ export const GRADING_DOMAIN_DEFINITION: DomainToolDefinition = {
         name: z.string(),
         description: z.string().optional(),
         useProjection: z.boolean().optional(),
+        site: z.string().min(1).optional().describe(
+          "Site that holds the group, created when it does not exist. Default: the first site, or a new '<name> Site' when the drawing has none.",
+        ),
       },
       supportedActions: ["group_create"],
       resolveAction: (rawArgs) => ({
@@ -481,6 +488,7 @@ export const GRADING_DOMAIN_DEFINITION: DomainToolDefinition = {
           name: rawArgs.name,
           description: rawArgs.description,
           useProjection: rawArgs.useProjection,
+          site: rawArgs.site,
         },
       }),
     },
