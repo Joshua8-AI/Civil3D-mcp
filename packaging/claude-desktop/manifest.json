@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "civil3d-mcp",
   "display_name": "Civil 3D MCP",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "Connect Claude Desktop to a live Autodesk Civil 3D 2026 drawing.",
   "long_description": "Civil 3D MCP gives Claude Desktop a compact set of tools for inspecting and modifying a live Civil 3D drawing, including alignments, surfaces, corridors, profiles, pipe networks, grading, hydrology, plan production, and QC. The native Civil3DMcpPlugin.dll must be loaded in Civil 3D before drawing tools can run.",
   "author": {

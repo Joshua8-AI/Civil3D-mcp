@@ -1,6 +1,11 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
+import { readFileSync } from "node:fs";
+
+const packageVersion: string = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+).version;
 
 // ─── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -123,7 +128,7 @@ describe("httpBridge", () => {
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({
         bridge: "ok",
-        versions: { application: "1.2.1", mcpSdk: expect.any(String), node: expect.any(String) },
+        versions: { application: packageVersion, mcpSdk: expect.any(String), node: expect.any(String) },
       });
       expect(executeOrchestratorMock).not.toHaveBeenCalled();
     });

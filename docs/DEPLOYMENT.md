@@ -154,7 +154,7 @@ The package is configured for npm publishing as-is. The `files` field in `packag
 ```json
 {
   "name": "civil3d-mcp",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "main": "build/index.js",
   "bin": {
     "civil3d-mcp": "./build/index.js"
