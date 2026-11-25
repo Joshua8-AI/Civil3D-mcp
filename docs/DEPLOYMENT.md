@@ -83,8 +83,8 @@ on the same HTTP port while the extension is enabled.
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/Sacred-G/Civil3D-mcp.git
-cd civil3d-mcp
+git clone https://github.com/Joshua8-AI/Civil3D-mcp.git
+cd Civil3D-mcp
 npm install
 ```
 

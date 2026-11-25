@@ -43,4 +43,4 @@ compatibility copy for older Claude Desktop releases. Current releases use the
 `.mcpb` filename.
 
 Source, native plugin build instructions, and troubleshooting:
-https://github.com/Sacred-G/Civil3D-mcp
+https://github.com/Joshua8-AI/Civil3D-mcp

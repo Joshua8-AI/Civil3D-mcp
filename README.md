@@ -11,7 +11,7 @@
   [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
   [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-1.29-blueviolet)](https://modelcontextprotocol.io)
   [![Civil 3D](https://img.shields.io/badge/Civil%203D-2026-0696D7?logo=autodesk&logoColor=white)](https://www.autodesk.com/products/civil-3d)
-  [![Issues](https://img.shields.io/github/issues/Sacred-G/Civil3D-mcp)](https://github.com/Sacred-G/Civil3D-mcp/issues)
+  [![Issues](https://img.shields.io/github/issues/Joshua8-AI/Civil3D-mcp)](https://github.com/Joshua8-AI/Civil3D-mcp/issues)
 
   <p>
     <a href="#quick-start">Quick Start</a> •
@@ -26,16 +26,16 @@
 ---
 
 > [!NOTE]
-> **This is jorgegarcias60's fork, branch `civil3d-2027`** = the Joshua8-AI 2027 fork (described below), kept in sync with its `civil3d-2027-support` branch, plus the fixes of this fork. All of this fork's fixes so far are now in Joshua8-AI's branch too (credited):
+> **Contributed from [jorgegarcias60's fork](https://github.com/jorgegarcias60/Civil3D-mcp)** (branch `civil3d-2027`, kept in sync with this repo's `civil3d-2027-support`). All of its fixes so far are in this branch (credited):
 > - QC: false "no triangles" error on healthy TIN surfaces ([Joshua8-AI#1](https://github.com/Joshua8-AI/Civil3D-mcp/pull/1), merged)
 > - Alignment station labels ([Joshua8-AI#2](https://github.com/Joshua8-AI/Civil3D-mcp/pull/2), taken in part as 664e81b; the style-name and profile-view fixes were already solved there another way)
 > - `catalog_list` part names, and alignments traced from an existing polyline with an exact curve radius ([Joshua8-AI#3](https://github.com/Joshua8-AI/Civil3D-mcp/pull/3), merged)
 > - `civil3d_coordinate_system` `set`: assign the drawing coordinate system by code, e.g. `FL83-WF` ([Joshua8-AI#4](https://github.com/Joshua8-AI/Civil3D-mcp/pull/4), taken as 2ca831b)
-> - Host hop: fail fast while Civil 3D is busy or a modal dialog is open (this fork's #1 and #2), carried into the plugin-command route of #4
+> - Host hop: fail fast while Civil 3D is busy or a modal dialog is open (jorgegarcias60's #1 and #2), carried into the plugin-command route of #4
 >
 > Still open upstream at Sacred-G (no maintainer response yet): [#10](https://github.com/Sacred-G/Civil3D-mcp/pull/10), [#11](https://github.com/Sacred-G/Civil3D-mcp/pull/11), [#12](https://github.com/Sacred-G/Civil3D-mcp/pull/12), [#13](https://github.com/Sacred-G/Civil3D-mcp/pull/13).
 >
-> Build and install it like the 2027 fork (`scripts\gather-refs-2027.ps1`, then `scripts\build-2027.ps1 -Install`); for Civil 3D 2026 build the default target (net8.0) against 2026 references. How the branch is kept up to date: [docs/FORK.md](./docs/FORK.md).
+> Build and install: `scripts\gather-refs-2027.ps1`, then `scripts\build-2027.ps1 -Install` (see [Installation](#installation)); for Civil 3D 2026 build the default target (net8.0) against 2026 references. How jorgegarcias60's branch is kept in sync with this one: [docs/FORK.md](./docs/FORK.md).
 >
 > The ApplicationPlugins bundle lives under `%APPDATA%`, which is not a trusted folder, so Civil 3D asks "Security - Unsigned Executable File" about `Civil3DMcpPlugin.dll` at every start. Where a folder is in `TRUSTEDPATHS` (Jorge's machine: `C:\CAD-Tools\...`), `scripts\install-trusted.ps1 -SourceDir <build output>` installs the plugin there instead: it copies the build to `C:\CAD-Tools\plugins\Civil3DMcp\R<series>\`, adds a marked block to `acaddoc.lsp` in the Civil 3D roaming support folder that NETLOADs it once per session, and removes the bundle. No prompt; the plugin loads when a drawing opens (not on the Start tab). `-Uninstall` reverses it.
 >
@@ -150,7 +150,7 @@ For a source-based or Claude Code installation:
 1. Clone and build the Node side:
 
    ```bash
-   git clone https://github.com/Sacred-G/Civil3D-mcp.git
+   git clone https://github.com/Joshua8-AI/Civil3D-mcp.git
    cd Civil3D-mcp
    npm install
    npm run build
@@ -324,7 +324,7 @@ narrow transaction; callers never mutate a drawing directly from Node.js.
 ### 1 — Build the MCP Server (TypeScript)
 
 ```bash
-git clone https://github.com/Sacred-G/Civil3D-mcp.git
+git clone https://github.com/Joshua8-AI/Civil3D-mcp.git
 cd Civil3D-mcp
 npm install
 npm run build

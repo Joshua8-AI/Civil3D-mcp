@@ -180,7 +180,7 @@ try {
   Name="Civil 3D MCP Plugin"
   PreferNewestAcross="AppData|ProgramFiles"
   >
-  <CompanyDetails Name="Sacred-G" Url="https://github.com/Sacred-G/Civil3D-mcp" Email="" />
+  <CompanyDetails Name="Sacred-G" Url="https://github.com/Joshua8-AI/Civil3D-mcp" Email="" />
   <RuntimeRequirements Platform="Civil3D" SeriesMin="$series" SeriesMax="$series" OS="Win64" SupportPath="./Contents" />
   <Components>
     <ComponentEntry AppName="Civil3DMcp" ModuleName="./Contents/Civil3DMcpPlugin.dll"
