@@ -33,7 +33,7 @@
 > - `civil3d_coordinate_system` `set`: assign the drawing coordinate system by code, e.g. `FL83-WF` ([Joshua8-AI#4](https://github.com/Joshua8-AI/Civil3D-mcp/pull/4), taken as 2ca831b)
 > - Host hop: fail fast while Civil 3D is busy or a modal dialog is open (jorgegarcias60's #1 and #2), carried into the plugin-command route of #4
 >
-> Still open upstream at Sacred-G (no maintainer response yet): [#10](https://github.com/Sacred-G/Civil3D-mcp/pull/10), [#11](https://github.com/Sacred-G/Civil3D-mcp/pull/11), [#12](https://github.com/Sacred-G/Civil3D-mcp/pull/12), [#13](https://github.com/Sacred-G/Civil3D-mcp/pull/13).
+> Submitted upstream to Sacred-G and still open (the upstream author may or may not merge them): [#10](https://github.com/Sacred-G/Civil3D-mcp/pull/10), [#11](https://github.com/Sacred-G/Civil3D-mcp/pull/11), [#12](https://github.com/Sacred-G/Civil3D-mcp/pull/12), [#13](https://github.com/Sacred-G/Civil3D-mcp/pull/13).
 >
 > Build and install: `scripts\gather-refs-2027.ps1`, then `scripts\build-2027.ps1 -Install` (see [Installation](#installation)); for Civil 3D 2026 build the default target (net8.0) against 2026 references. How jorgegarcias60's branch is kept in sync with this one: [docs/FORK.md](./docs/FORK.md).
 >
@@ -42,12 +42,16 @@
 > `civil3d_run_code` runs C# inside Civil 3D (see In-process C# below); `node scripts/run-code-file.mjs <file.cs>` runs a script file through the MCP server from a terminal.
 
 > [!IMPORTANT]
-> **This is the [Joshua8-AI](https://github.com/Joshua8-AI/Civil3D-mcp) fork with working Civil 3D 2027 support.** Differences from [upstream](https://github.com/Sacred-G/Civil3D-mcp) (all credit for the project itself goes to Sacred-G):
+> **This is the [Joshua8-AI](https://github.com/Joshua8-AI/Civil3D-mcp) fork with working Civil 3D 2027 support.** Differences from [upstream](https://github.com/Sacred-G/Civil3D-mcp) (all credit for the project itself goes to Sacred-G).
+>
+> **Every code change in this fork has been submitted upstream** as pull requests to [Sacred-G/Civil3D-mcp](https://github.com/Sacred-G/Civil3D-mcp/pulls): [#7](https://github.com/Sacred-G/Civil3D-mcp/pull/7), [#8](https://github.com/Sacred-G/Civil3D-mcp/pull/8), [#17](https://github.com/Sacred-G/Civil3D-mcp/pull/17)–[#20](https://github.com/Sacred-G/Civil3D-mcp/pull/20), [#22](https://github.com/Sacred-G/Civil3D-mcp/pull/22)–[#24](https://github.com/Sacred-G/Civil3D-mcp/pull/24) and [#28](https://github.com/Sacred-G/Civil3D-mcp/pull/28)–[#33](https://github.com/Sacred-G/Civil3D-mcp/pull/33) from this fork, and [#10](https://github.com/Sacred-G/Civil3D-mcp/pull/10)–[#13](https://github.com/Sacred-G/Civil3D-mcp/pull/13) from jorgegarcias60. The upstream author may or may not choose to incorporate them. Until then this fork carries them. Only fork housekeeping is not submitted: this fork's version and releases, links pointing to this repo, test records in `TESTING.md`, and the 8757 port default in `docker-compose.yml`.
+>
+> What differs from upstream:
 > - **Pre-built release: [v1.3.0](https://github.com/Joshua8-AI/Civil3D-mcp/releases/tag/v1.3.0)** has the Civil 3D 2027 plugin as a ready-to-extract bundle ZIP and the Claude Desktop extension (`.mcpb`), with install steps. There is no pre-built 2026 plugin; build that from source.
 > - **Civil 3D 2027 (.NET 10) build**: `scripts\gather-refs-2027.ps1` stages the six reference DLLs (spread across three folders in a 2027 install), then `scripts\build-2027.ps1 -Install` builds with a command-line TFM override and deploys. 2026 builds are unaffected.
 > - **Auto-load via ApplicationPlugins bundle** (`scripts\install-bundle.ps1`) instead of NETLOAD/Startup Suite, which AutoCAD's default `SECURELOAD=1` security silently rejects.
 > - **Plugin port is 8757, not 8080** (avoids clashes with other local services). The bundled Claude launcher sets `CIVIL3D_PORT=8757` automatically; register manually with `claude mcp add civil3d --scope user -e CIVIL3D_PORT=8757 -- node <repo>\build\index.js`. Port references below (8080) describe upstream defaults.
-> - The version-independent 2027 fixes are proposed upstream in [Sacred-G/Civil3D-mcp#7](https://github.com/Sacred-G/Civil3D-mcp/pull/7).
+> - Many more fixes and tools (plotting, xrefs, drawing compare, `civil3d_run_code`, profile and label fixes and more); see [CHANGELOG.md](./CHANGELOG.md). Each one is in one of the upstream pull requests above.
 
 ## What Is This?
 
